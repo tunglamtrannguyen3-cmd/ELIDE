@@ -1,0 +1,20 @@
+[package]                                         name = "elide"                                    version = "0.3.1"                                 edition = "2021"                                  
+[dependencies]
+# Terminal handling
+crossterm = "0.28"
+
+# TUI rendering
+ratatui = "0.30"
+
+# Async runtime for non-blocking execution
+tokio = { version = "1.52", features = ["full"] }
+
+# Error handling
+anyhow = "1.0"
+
+# Direct Linux Kernel & POSIX interfaces
+libc = "0.2"             # Direct C library & syscall bindings
+# 🛠️ Added "resource" feature flag below for peak RAM tracking via getrusage
+nix = { version = "0.29", features = ["process", "mman", "ptrace", "resource", "user"] }
+aya = { version = "0.12", features = ["async_tokio"] } # Linux eBPF kernel space program loader
+                                                  [profile.release]                                 opt-level = 3                                     lto = "fat"              # Full Link-Time Optimization                                              panic = "abort"          # Eliminates unwinding landing pads                                        codegen-units = 1
