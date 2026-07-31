@@ -54,7 +54,7 @@ async fn main() -> Result<()> {
     if args.len() > 1 {
         if args[1] == "-bro!" {
             app.editor.lines = vec![
-                "☯️ [ELIDE - Touhou Achi Archway Edition] ☯️".to_string(),
+                "☯️ [ELIDE - Always ready] ☯️".to_string(),
                 "System: All spiritual buffers loaded.".to_string(),
                 "Ready for spellcard compilation...".to_string(),
             ];
@@ -256,7 +256,7 @@ fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
         .collect();
 
     let title = format!(
-        " ☯️ ELIDE v0.3.1 - {} {} ",
+        " ☯️ ELIDE v0.3.2 - {} {} ",
         app.editor
             .filename
             .as_deref()
