@@ -95,3 +95,4 @@ pub async fn compile_file(editor: &Editor) -> Result<ProcessResult> {
             max_rss_kb: 0,                                }),
     };
                                                       run_bash_cmd(&build_command).await
+}
