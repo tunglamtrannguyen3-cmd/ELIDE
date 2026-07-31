@@ -1,4 +1,11 @@
-[package]                                         name = "elide"                                    version = "0.3.2"                                 edition = "2021"                                  
+[package]
+name = "elide"
+version = "0.3.2"
+edition = "2021"
+description = "I'mma beat Doom."
+license = "MIT"
+repository = "https://github.com/tunglamtrannguyen3-cmd/ELIDE"
+                             
 [dependencies]
 # Terminal handling
 crossterm = "0.28"
