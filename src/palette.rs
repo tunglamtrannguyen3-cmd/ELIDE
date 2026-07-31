@@ -127,23 +127,30 @@ impl Palette {
                 }
             }
             PaletteAction::Info => {
-                let info = format!(
-                    "ℹ️ [ELIDE INFO]\n\
-                     • Target File   : {}\n\
-                     • Total Lines   : {}\n\
-                     • Cursor Pos    : Row {}, Col {}\n\
-                     • Custom Build  : {}\n\
-                     • Target OS/Arch: {} / {}",
-                    editor.filename.as_deref().unwrap_or("[Untitled]"),
-                    editor.lines.len(),
-                    editor.cursor.row + 1,
-                    editor.cursor.col + 1,
-                    editor.custom_build_cmd.as_deref().unwrap_or("None (Auto-detect)"),
-                    std::env::consts::OS,
-                    std::env::consts::ARCH
-                );
-                (info, true)
-            }
+    let info = format!(
+        "ℹ️ [ELIDE INFO]\n\
+         • Version       : v0.3.2\n\
+         • Author        : Eggchese\n\
+         • Email         : (tunglamtrannguyen3@gmail.com)\n\
+         • Favorite Idol : Dream\n\
+         • Skills        : Systems Programming, Rust, Linux Kernel, TUI Arch\n\
+         -----------------------------------\n\
+         • Target File   : {}\n\
+         • Total Lines   : {}\n\
+         • Cursor Pos    : Row {}, Col {}\n\
+         • Custom Build  : {}\n\
+         • Target OS/Arch: {} / {}",
+        editor.filename.as_deref().unwrap_or("[Untitled]"),
+        editor.lines.len(),
+        editor.cursor.row + 1,
+        editor.cursor.col + 1,
+        editor.custom_build_cmd.as_deref().unwrap_or("None (Auto-detect)"),
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    );
+    (info, true)
+}
+
             PaletteAction::Help => (
                 "📖 [ELIDE COMMAND PALETTE MANUAL]\n\
                  • Flags: -c (Compile), -d (Debug), -s (Save), -i (Info), -bro! (Vent)\n\
