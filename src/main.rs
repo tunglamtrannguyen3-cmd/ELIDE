@@ -12,7 +12,7 @@ use palette::{Palette, PaletteAction};
 use ratatui::{
     layout::{Constraint, Direction, Layout},
     text::Line,
-    widgets::{Block, Borders, Paragraph, Wrap}, // ↩️ Added Wrap widget import
+    widgets::{Block, Borders, Paragraph, Wrap},
 };
 use std::{env, time::Duration};
 use terminal::{InputEvent, TerminalGuard};
@@ -101,8 +101,10 @@ async fn main() -> Result<()> {
                         app.palette.toggle();
                     }
                     KeyCode::Enter => {
-                        // 1. Parse command BEFORE clearing input buffer
-                        let action = app.palette.parse_command();
+                        // 1. Parse command passing active file context for language check
+                        let action = app
+                            .palette
+                            .parse_command(app.editor.filename.as_deref());
 
                         // 2. Clear input buffer & reset scroll
                         app.palette.input_buffer.clear();
@@ -129,7 +131,10 @@ async fn main() -> Result<()> {
                                 match process::compile_file(&app.editor).await {
                                     Ok(res) => {
                                         if res.max_rss_kb > 0 {
-                                            app.status_message = format!("{}\n[Peak RSS: {} KB]", res.output, res.max_rss_kb);
+                                            app.status_message = format!(
+                                                "{}\n[Peak RSS: {} KB]",
+                                                res.output, res.max_rss_kb
+                                            );
                                         } else {
                                             app.status_message = res.output;
                                         }
@@ -155,12 +160,14 @@ async fn main() -> Result<()> {
                                 }
                             }
                             _ => {
-                                // Keep terminal active for multi-line outputs (Bro, Help, Info, Debug)
+                                // Keep terminal active for outputs & unrecognized entries
                                 app.palette.is_active = match action {
                                     PaletteAction::Help
                                     | PaletteAction::Info
                                     | PaletteAction::Bro
-                                    | PaletteAction::Debug => true,
+                                    | PaletteAction::Debug
+                                    | PaletteAction::UnknownCommand(_)
+                                    | PaletteAction::UnknownCode(_) => true,
                                     _ => false,
                                 };
 
@@ -222,10 +229,7 @@ fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(1),
-            Constraint::Length(palette_height),
-        ])
+        .constraints([Constraint::Min(1), Constraint::Length(palette_height)])
         .split(frame.area());
 
     let editor_area = chunks[0];
@@ -266,8 +270,10 @@ fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
     frame.render_widget(editor_widget, editor_area);
 
     if !app.palette.is_active {
-        let screen_cursor_row = (app.editor.cursor.row.saturating_sub(app.editor.row_offset)) as u16 + 1;
-        let screen_cursor_col = (app.editor.cursor.col.saturating_sub(app.editor.col_offset)) as u16 + 1;
+        let screen_cursor_row =
+            (app.editor.cursor.row.saturating_sub(app.editor.row_offset)) as u16 + 1;
+        let screen_cursor_col =
+            (app.editor.cursor.col.saturating_sub(app.editor.col_offset)) as u16 + 1;
 
         frame.set_cursor_position((
             editor_area.x + screen_cursor_col,
@@ -287,11 +293,16 @@ fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
         };
         (content, colors::warning_style())
     } else {
-        let status = if app.last_success {
+        let status = if app.status_message.starts_with("Unknown command:") {
+            colors::Status::UnknownCommand
+        } else if app.status_message.starts_with("Unknown code:") {
+            colors::Status::UnknownCode
+        } else if app.last_success {
             colors::Status::Success
         } else {
             colors::Status::Error
         };
+
         (
             format!(" {}", app.status_message),
             colors::style_for_status(status),
@@ -301,17 +312,16 @@ fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
     let status_widget = if app.palette.is_active {
         Paragraph::new(status_text)
             .style(status_style)
-            .wrap(Wrap { trim: false }) // ↩️ Enable word wrapping in Terminal view
-            .scroll((app.status_scroll, 0)) // 📜 Enable vertical scrolling
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(format!(" Terminal / Palette (Scroll: ↑/↓ | Esc: Close) [{}] ", app.status_scroll)),
-            )
+            .wrap(Wrap { trim: false })
+            .scroll((app.status_scroll, 0))
+            .block(Block::default().borders(Borders::ALL).title(format!(
+                " Terminal / Palette (Scroll: ↑/↓ | Esc: Close) [{}] ",
+                app.status_scroll
+            )))
     } else {
         Paragraph::new(status_text)
             .style(status_style)
-            .wrap(Wrap { trim: false }) // ↩️ Enable word wrapping on bottom bar
+            .wrap(Wrap { trim: false })
     };
 
     frame.render_widget(status_widget, status_area);
