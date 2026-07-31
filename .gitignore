@@ -19,3 +19,29 @@ target
 #  and can be added to the global gitignore or merged into this file.  For a more nuclear
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
+
+# Environment variables (prevents accidentally pushing secrets/API keys)
+.env
+.env.*
+!.env.example
+
+# OS-generated files
+.DS_Store
+Thumbs.db
+
+# VS Code directory (if you or contributors use VS Code)
+.vscode/
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# Vim / Emacs swap and backup files
+*~
+*.swp
+*.swo
+
+# Coverage & Profiling reports (if you run cargo-tarpaulin or profilers later)
+*.profraw
+cobertura.xml
+tarpaulin-report.html
