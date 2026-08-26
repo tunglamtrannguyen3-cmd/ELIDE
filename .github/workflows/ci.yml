@@ -1,3 +1,12 @@
+# .github/workflows/test.yml
 name: test
-run:
-cargo check
+
+on: [push, pull_request]
+
+jobs:
+  cargo-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo check
