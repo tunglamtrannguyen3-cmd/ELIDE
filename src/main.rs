@@ -67,17 +67,14 @@ async fn main() -> Result<()> {
         }
     }
 
-    // 3. Main Event & Render Loop
+    // Main Event & Render Loop
     while app.is_running {
         terminal.draw(|frame| render_ui(frame, &mut app))?;
 
         // Process polled terminal events
         match terminal::poll_event(Duration::from_millis(16))? {
-InputEvent::Tick => {}
-            // FIX 1: Consume Resize event dimensions so fields `0` and `1` are read
-            InputEvent::Resize(_width, _height) => {
-                // Window resized; layout recalculates automatically on next draw call
-            }
+            InputEvent::Tick => {}
+            InputEvent::Resize(_width, _height) => {}
             InputEvent::Key(key) => {
                 if terminal::is_alt_t(&key) {
                     app.palette.toggle();
@@ -86,7 +83,6 @@ InputEvent::Tick => {}
                 }
 
                 if app.palette.is_active {
-                    // FIX 2: Use `terminal::is_esc` utility function
                     if terminal::is_esc(&key) {
                         app.palette.toggle();
                         continue;
@@ -199,6 +195,9 @@ InputEvent::Tick => {}
                             app.editor.insert_newline();
                         }
                         KeyCode::Backspace => {
+                            app.editor.backspace();
+                        }
+                        KeyCode::Delete => {
                             app.editor.delete_char();
                         }
                         KeyCode::Up => {
@@ -240,6 +239,7 @@ fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
 
     app.editor.scroll_into_view(visible_width, visible_height);
 
+    // FIX: Unicode-safe character slicing instead of raw byte slicing
     let visible_lines: Vec<Line> = app
         .editor
         .lines
@@ -247,16 +247,13 @@ fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
         .skip(app.editor.row_offset)
         .take(visible_height)
         .map(|line| {
-            if app.editor.col_offset < line.len() {
-                Line::from(&line[app.editor.col_offset..])
-            } else {
-                Line::from("")
-            }
+            let scrolled_line: String = line.chars().skip(app.editor.col_offset).collect();
+            Line::from(scrolled_line)
         })
         .collect();
 
     let title = format!(
-        " ☯️ ELIDE v1.0.0 - {} {} ",
+        " ☯️ ELIDE v1.1.0 - {} {} ",
         app.editor
             .filename
             .as_deref()
@@ -270,10 +267,12 @@ fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
     frame.render_widget(editor_widget, editor_area);
 
     if !app.palette.is_active {
+        // FIX: Calculate visual column position so CJK/Emojis render cursor properly
+        let visual_col = app.editor.visual_cursor_col();
         let screen_cursor_row =
             (app.editor.cursor.row.saturating_sub(app.editor.row_offset)) as u16 + 1;
         let screen_cursor_col =
-            (app.editor.cursor.col.saturating_sub(app.editor.col_offset)) as u16 + 1;
+            (visual_col.saturating_sub(app.editor.col_offset)) as u16 + 1;
 
         frame.set_cursor_position((
             editor_area.x + screen_cursor_col,
@@ -281,7 +280,6 @@ fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
         ));
     }
 
-    // FIX 3: Construct `colors::Status::Warning` for warning log messages
     let (status_text, status_style) = if app.palette.is_active {
         let content = if app.status_message.is_empty() {
             format!("Alt+T Palette > {}_", app.palette.input_buffer)

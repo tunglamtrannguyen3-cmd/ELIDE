@@ -135,7 +135,7 @@ impl Palette {
             PaletteAction::Info => {
                 let info = format!(
                     "ℹ️ [ELIDE INFO]\n\
-                     • Version       : v1.0.0\n\
+                     • Version       : v1.1.0\n\
                      • Author        : Eggchese\n\
                      • Email         : (tunglamtrannguyen3@gmail.com)\n\
                      • Favorite Idol : Dream\n\
