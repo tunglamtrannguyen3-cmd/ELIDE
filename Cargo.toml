@@ -1,6 +1,6 @@
 [package]
 name = "elide"
-version = "0.3.2"
+version = "1.1.0"
 edition = "2021"
 description = "I'mma beat Doom."
 license = "MIT"
@@ -8,22 +8,27 @@ repository = "https://github.com/tunglamtrannguyen3-cmd/ELIDE"
 
 [dependencies]
 # Terminal handling
-crossterm = "0.28"
+crossterm = "0.29"
 
 # TUI rendering
 ratatui = "0.30"
 
 # Async runtime for non-blocking execution
-tokio = { version = "1.52", features = ["full"] }
+tokio = { version = "1.53", features = ["full"] }
 
 # Error handling
 anyhow = "1.0"
 
 # Direct Linux Kernel & POSIX interfaces
-libc = "0.2"             # Direct C library & syscall bindings
-# 🛠️ Added "resource" feature flag below for peak RAM tracking via getrusage
-nix = { version = "0.29", features = ["process", "mman", "ptrace", "resource", "user"] }
-aya = { version = "0.12", features = ["async_tokio"] } # Linux eBPF kernel space program loader
+libc = "0.2"
+
+# System call wrapper with Peak RAM tracking via getrusage
+nix = { version = "0.31", features = ["process", "mman", "ptrace", "resource", "user"] }
+
+# Linux eBPF kernel space program loader & Tokio integration
+aya = "0.14"
+
+unicode-width = "0.2"
 
 [profile.release]
 opt-level = 3
