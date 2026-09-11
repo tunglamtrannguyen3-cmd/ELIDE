@@ -3,10 +3,11 @@ use ratatui::style::{Color, Modifier, Style};
 pub struct Palette;
 
 impl Palette {
-    pub const ERROR_RED: Color = Color::Rgb(255, 107, 107);    // #FF6B6B
-    pub const WARNING_AMBER: Color = Color::Rgb(255, 184, 77);  // #FFB84D
-    pub const SUCCESS_MINT: Color = Color::Rgb(78, 206, 144);   // #4ECE90
-    pub const NAVY_GRAY: Color = Color::Rgb(112, 128, 144);    // #708090 (Navy / Slate Gray)
+    pub const ERROR_RED: Color = Color::Rgb(227, 83, 54);      // #E35336
+    pub const WARNING_GOLD: Color = Color::Rgb(255, 215, 0);    // #FFD700
+    pub const HINT_ICE_BLUE: Color = Color::Rgb(193, 213, 240);  // #C1D5F0
+    pub const SUCCESS_LIME: Color = Color::Rgb(137, 243, 54);   // #89F336
+    pub const NAVY_GRAY: Color = Color::Rgb(112, 128, 144);     // #708090
 }
 
 pub fn error_style() -> Style {
@@ -17,12 +18,18 @@ pub fn error_style() -> Style {
 
 pub fn warning_style() -> Style {
     Style::default()
-        .fg(Palette::WARNING_AMBER)
+        .fg(Palette::WARNING_GOLD)
         .add_modifier(Modifier::BOLD)
 }
 
+pub fn hint_style() -> Style {
+    Style::default().fg(Palette::HINT_ICE_BLUE)
+}
+
 pub fn success_style() -> Style {
-    Style::default().fg(Palette::SUCCESS_MINT)
+    Style::default()
+        .fg(Palette::SUCCESS_LIME)
+        .add_modifier(Modifier::BOLD)
 }
 
 pub fn navy_gray_style() -> Style {
@@ -48,4 +55,3 @@ pub fn style_for_status(status: Status) -> Style {
         Status::UnknownCommand | Status::UnknownCode => navy_gray_style(),
     }
 }
-
