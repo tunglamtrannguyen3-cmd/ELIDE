@@ -49,6 +49,14 @@ pub fn is_alt_l(key: &KeyEvent) -> bool {
     key.modifiers.contains(KeyModifiers::ALT) && key.code == KeyCode::Char('l')
 }
 
+pub fn is_alt_up(key: &KeyEvent) -> bool {
+    key.modifiers.contains(KeyModifiers::ALT) && key.code == KeyCode::Up
+}
+
+pub fn is_alt_down(key: &KeyEvent) -> bool {
+    key.modifiers.contains(KeyModifiers::ALT) && key.code == KeyCode::Down
+}
+
 pub fn is_esc(key: &KeyEvent) -> bool {
     key.code == KeyCode::Esc
 }
