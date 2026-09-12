@@ -1,41 +1,12 @@
-use ratatui::style::{Color, Modifier, Style};
+use crossterm::style::{Attribute, Color};
 
 pub struct Palette;
-
 impl Palette {
-    pub const ERROR_RED: Color = Color::Rgb(227, 83, 54);      // #E35336
-    pub const WARNING_GOLD: Color = Color::Rgb(255, 215, 0);    // #FFD700
-    pub const HINT_ICE_BLUE: Color = Color::Rgb(193, 213, 240);  // #C1D5F0
-    pub const SUCCESS_LIME: Color = Color::Rgb(137, 243, 54);   // #89F336
-    pub const NAVY_GRAY: Color = Color::Rgb(112, 128, 144);     // #708090
-}
-
-pub fn error_style() -> Style {
-    Style::default()
-        .fg(Palette::ERROR_RED)
-        .add_modifier(Modifier::BOLD)
-}
-
-pub fn warning_style() -> Style {
-    Style::default()
-        .fg(Palette::WARNING_GOLD)
-        .add_modifier(Modifier::BOLD)
-}
-
-pub fn hint_style() -> Style {
-    Style::default().fg(Palette::HINT_ICE_BLUE)
-}
-
-pub fn success_style() -> Style {
-    Style::default()
-        .fg(Palette::SUCCESS_LIME)
-        .add_modifier(Modifier::BOLD)
-}
-
-pub fn navy_gray_style() -> Style {
-    Style::default()
-        .fg(Palette::NAVY_GRAY)
-        .add_modifier(Modifier::DIM)
+    pub const ERROR_RED: Color = Color::Rgb { r: 227, g: 83, b: 54 };
+    pub const WARNING_GOLD: Color = Color::Rgb { r: 255, g: 215, b: 0 };
+    pub const HINT_ICE_BLUE: Color = Color::Rgb { r: 193, g: 213, b: 240 };
+    pub const SUCCESS_LIME: Color = Color::Rgb { r: 137, g: 243, b: 54 };
+    pub const NAVY_GRAY: Color = Color::Rgb { r: 112, g: 128, b: 144 };
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,11 +18,18 @@ pub enum Status {
     UnknownCode,
 }
 
-pub fn style_for_status(status: Status) -> Style {
+pub fn color_for_status(status: Status) -> Color {
     match status {
-        Status::Success => success_style(),
-        Status::Warning => warning_style(),
-        Status::Error => error_style(),
-        Status::UnknownCommand | Status::UnknownCode => navy_gray_style(),
+        Status::Success => Palette::SUCCESS_LIME,
+        Status::Warning => Palette::WARNING_GOLD,
+        Status::Error => Palette::ERROR_RED,
+        Status::UnknownCommand | Status::UnknownCode => Palette::NAVY_GRAY,
+    }
+}
+
+pub fn attribute_for_status(status: Status) -> Attribute {
+    match status {
+        Status::Success | Status::Warning | Status::Error => Attribute::Bold,
+        Status::UnknownCommand | Status::UnknownCode => Attribute::Dim,
     }
 }

@@ -54,21 +54,42 @@ impl Palette {
             .unwrap_or("");
 
         match ext {
-            "cpp" | "c" | "h" => {
-                input.contains("fn ")
-                    || input.contains("let mut")
-                    || input.contains("println!")
-                    || input.contains("use crate::")
+            "cpp" | "c" | "h" | "cxx" => {
+                input.contains("fn ") 
+                    || input.contains("let mut") 
+                    || input.contains("println!") 
+                    || input.contains("def ")
+                    || input.contains("with Ada")
+                    || input.contains("procedure ")
+                    || input.contains("begin ")
             }
             "rs" => {
-                input.contains("#include")
-                    || input.contains("std::cout")
-                    || input.contains("using namespace")
+                input.contains("#include") 
+                    || input.contains("std::cout") 
+                    || input.contains("using namespace") 
+                    || input.contains("def ")
+                    || input.contains("with Ada")
+                    || input.contains("procedure ")
+                    || input.contains("begin ")
             }
             "py" => {
-                input.contains("fn ")
-                    || input.contains("#include")
+                input.contains("fn ") 
+                    || input.contains("let mut")
+                    || input.contains("#include") 
                     || input.contains("public static void")
+                    || input.contains("with Ada")
+                    || input.contains("procedure ")
+                    || input.contains("begin ")
+            }
+            "adb" | "ads" | "ada" => {
+                // Catches Rust, C/C++, Java, Python, and JS/TS pasted into Ada
+                input.contains("fn ")
+                    || input.contains("let mut")
+                    || input.contains("#include")
+                    || input.contains("std::")
+                    || input.contains("public static void")
+                    || input.contains("def ")
+                    || input.contains("console.log")
             }
             _ => false,
         }
@@ -135,7 +156,7 @@ impl Palette {
             PaletteAction::Info => {
                 let info = format!(
                     "ℹ️ [ELIDE INFO]\n\
-                     • Version       : v1.1.0\n\
+                     • Version       : v1.2.0\n\
                      • Author        : Eggchese\n\
                      • Email         : (tunglamtrannguyen3@gmail.com)\n\
                      • Favorite Idol : Dream\n\
@@ -164,17 +185,38 @@ impl Palette {
                     .to_string(),
                 true,
             ),
-            PaletteAction::Bro => (
-                "Take a breather! Here are some recommended games to unwind:\n\n\
-                 • Touhou Project (Bullet Hell / STG)\n\
-                   Solo-developed iconic Japanese series with intense spell-card patterns and incredible soundtracks.\n\n\
-                 • Elden Ring (Action RPG / Open World)\n\
-                   Vast open-world dark fantasy filled with deep exploration and rewarding combat.\n\n\
-                 • Minecraft (Sandbox / Survival)\n\
-                   Infinite creative sandbox to build, relax, and chill after long coding sessions."
-                    .to_string(),
-                true,
-            ),
+            PaletteAction::Bro => {
+                let games = [
+                    "Minecraft (Sandbox / Build & Relax)",
+                    "Touhou Project (Bullet Hell / STG)",
+                    "Elden Ring (Action RPG / Exploration)",
+                    "CS2 (Tactical Shooter / Competitive)",
+                    "Chess (Strategy / Mental Workout)",
+                    "Sleep (The Ultimate Recovery Meta)",
+                    "Terraria (2D Sandbox Adventure)",
+                    "Hollow Knight (Metroidvania Exploration)",
+                    "Celeste (Precision Platformer)",
+                    "Stardew Valley (Farming & Chill)"
+                ];
+
+                let seed = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as usize;
+
+                let chosen = games[seed % games.len()];
+
+                (
+                    format!(
+                        "🎲 [RANDOM BREAK GENERATOR]\n\n\
+                         Time to step away from the keyboard. Your assigned activity:\n\n\
+                         • {}\n\n\
+                         Close the terminal, go clear your head, and come back fresh!",
+                        chosen
+                    ),
+                    true,
+                )
+            }
             PaletteAction::RunBash(cmd) => match process::run_bash_cmd(&cmd).await {
                 Ok(res) => (res.output, res.success),
                 Err(e) => (format!("Bash Error: {}", e), false),
@@ -230,4 +272,3 @@ impl Palette {
         }
     }
 }
-

@@ -8,7 +8,6 @@ use crate::editor::Editor;
 pub struct ProcessResult {
     pub success: bool,
     pub output: String,
-    pub max_rss_kb: i64,
 }
 
 pub async fn run_bash_cmd(cmd_str: &str) -> Result<ProcessResult> {
@@ -42,7 +41,6 @@ pub async fn run_bash_cmd(cmd_str: &str) -> Result<ProcessResult> {
     Ok(ProcessResult {
         success,
         output: formatted_output,
-        max_rss_kb,
     })
 }
 
@@ -59,6 +57,7 @@ pub async fn compile_file(editor: &Editor) -> Result<ProcessResult> {
         "rs" => format!("rustc {}", filename),
         "c" | "h" => format!("gcc {} -o out && ./out", filename),
         "cpp" | "cxx" | "cc" | "c++" | "hpp" | "hxx" | "hh" => format!("g++ {} -o out && ./out", filename),
+        "adb" | "ads" | "ada" => format!("gnatmake {} && ./{}", filename, stem),
         "d" => format!("dmd -of=out {} && ./out", filename),
         "go" => format!("go run {}", filename),
         "nim" => format!("nim c -r {}", filename),
@@ -92,7 +91,8 @@ pub async fn compile_file(editor: &Editor) -> Result<ProcessResult> {
         _ => return Ok(ProcessResult {
             success: false,
             output: format!("Unsupported extension '.{}'. Use 'set-build <cmd>' or 'sh <cmd>' in Alt+T", extension),
-            max_rss_kb: 0,                                }),
+        }),
     };
-                                                      run_bash_cmd(&build_command).await
+
+    run_bash_cmd(&build_command).await
 }
