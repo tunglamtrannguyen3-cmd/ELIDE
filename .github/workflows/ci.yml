@@ -1,0 +1,22 @@
+# .github/workflows/build.yml
+name: build
+
+on: [push, pull_request]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build ELIDE
+        run: cargo build --release
+
+      - name: Upload ELIDE binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: elide-linux
+          path: target/release/elide
