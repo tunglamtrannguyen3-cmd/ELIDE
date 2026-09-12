@@ -1,16 +1,18 @@
-use anyhow::Result;
-use aya::Ebpf;
-
+#[derive(Debug, Clone)]
 pub struct KernelTracer {
-    _bpf: Option<Ebpf>,
+    #[allow(dead_code)]
+    pub active: bool,
 }
 
 impl KernelTracer {
-    pub fn init() -> Result<Self> {
-        if !nix::unistd::Uid::effective().is_root() {
-            anyhow::bail!("eBPF tracing requires root or CAP_BPF permissions.");
+    pub fn init() -> Self {
+        Self { active: true }
+    }
+
+    #[allow(dead_code)]
+    pub fn log_event(&self, event: &str) {
+        if self.active {
+            let _ = event;
         }
-        Ok(Self { _bpf: None })
     }
 }
-

@@ -14,6 +14,7 @@ pub enum Status {
     Success,
     Warning,
     Error,
+    Hint,
     UnknownCommand,
     UnknownCode,
 }
@@ -23,13 +24,14 @@ pub fn color_for_status(status: Status) -> Color {
         Status::Success => Palette::SUCCESS_LIME,
         Status::Warning => Palette::WARNING_GOLD,
         Status::Error => Palette::ERROR_RED,
+        Status::Hint => Palette::HINT_ICE_BLUE,
         Status::UnknownCommand | Status::UnknownCode => Palette::NAVY_GRAY,
     }
 }
 
 pub fn attribute_for_status(status: Status) -> Attribute {
     match status {
-        Status::Success | Status::Warning | Status::Error => Attribute::Bold,
+        Status::Success | Status::Warning | Status::Error | Status::Hint => Attribute::Bold,
         Status::UnknownCommand | Status::UnknownCode => Attribute::Dim,
     }
 }

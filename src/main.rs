@@ -27,6 +27,7 @@ use terminal::InputEvent;
 #[tokio::main]
 async fn main() -> Result<()> {
     let _guard = terminal::TerminalGuard::init()?;
+    let _tracer = tracer::KernelTracer::init();
     let mut stdout = stdout();
 
     let mut editor = Editor::new();
@@ -176,6 +177,8 @@ async fn main() -> Result<()> {
                 colors::Status::UnknownCode
             } else if msg.contains("Warning") {
                 colors::Status::Warning
+            } else if msg.contains("Hint") || msg.contains("info") {
+                colors::Status::Hint
             } else { 
                 colors::Status::Error 
             };
