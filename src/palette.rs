@@ -11,13 +11,13 @@ pub enum PaletteAction {
     Bro,
     RunBash(String),
     UnknownCommand(String),
-    UnknownCode(String),
     Empty,
 
     New(String),
     Code(String),
     Switch(String),
     SetBuild(String),
+    SetLsp(String),
 }
 
 pub struct Palette {
@@ -41,53 +41,7 @@ impl Palette {
             .to_string()
     }
 
-    fn detect_language_mismatch(&self, input: &str, current_file: Option<&str>) -> bool {
-        let ext = current_file
-            .and_then(|f| f.split('.').last())
-            .unwrap_or("");
-
-        match ext {
-            "cpp" | "c" | "h" | "cxx" => {
-                input.contains("fn ") 
-                    || input.contains("let mut") 
-                    || input.contains("println!") 
-                    || input.contains("def ")
-                    || input.contains("with Ada")
-                    || input.contains("procedure ")
-                    || input.contains("begin ")
-            }
-            "rs" => {
-                input.contains("#include") 
-                    || input.contains("std::cout") 
-                    || input.contains("using namespace") 
-                    || input.contains("def ")
-                    || input.contains("with Ada")
-                    || input.contains("procedure ")
-                    || input.contains("begin ")
-            }
-            "py" => {
-                input.contains("fn ") 
-                    || input.contains("let mut")
-                    || input.contains("#include") 
-                    || input.contains("public static void")
-                    || input.contains("with Ada")
-                    || input.contains("procedure ")
-                    || input.contains("begin ")
-            }
-            "adb" | "ads" | "ada" => {
-                input.contains("fn ")
-                    || input.contains("let mut")
-                    || input.contains("#include")
-                    || input.contains("std::")
-                    || input.contains("public static void")
-                    || input.contains("def ")
-                    || input.contains("console.log")
-            }
-            _ => false,
-        }
-    }
-
-    pub fn parse_command(&self, current_file: Option<&str>) -> PaletteAction {
+    pub fn parse_command(&self, _current_file: Option<&str>) -> PaletteAction {
         let trimmed = self.input_buffer.trim();
         if trimmed.is_empty() {
             return PaletteAction::Empty;
@@ -111,11 +65,11 @@ impl Palette {
             PaletteAction::Switch(Self::extract_arg(trimmed, "switch "))
         } else if trimmed.starts_with("set-build ") {
             PaletteAction::SetBuild(Self::extract_arg(trimmed, "set-build "))
+        } else if trimmed.starts_with("lsp ") {
+            PaletteAction::SetLsp(Self::extract_arg(trimmed, "lsp "))
         } else if trimmed.starts_with("sh ") {
             let raw_bash = trimmed[3..].trim().to_string();
             PaletteAction::RunBash(raw_bash)
-        } else if self.detect_language_mismatch(trimmed, current_file) {
-            PaletteAction::UnknownCode(trimmed.to_string())
         } else {
             PaletteAction::UnknownCommand(trimmed.to_string())
         }
@@ -147,12 +101,19 @@ impl Palette {
             }
             PaletteAction::Info => {
                 let info = format!(
-                    "ℹ️ [ELIDE INFO]\n\
+                   "███████╗██╗     ██╗██████╗ ███████╗
+                    ██╔════╝██║     ██║██╔══██╗██╔════╝
+                    █████╗  ██║     ██║██║  ██║█████╗  
+                    ██╔══╝  ██║     ██║██║  ██║██╔══╝  
+                    ███████╗███████╗██║██████╔╝███████╗
+                    ╚══════╝╚══════╝╚═╝╚═════╝ ╚══════╝
+                    ℹ️ [ABOUT AUTHOR]\n\
                      • Author        : Eggchese\n\
                      • Email         : (tunglamtrannguyen3@gmail.com)\n\
                      • Favorite Idol : Yatsuzume\n\
                      • Skills        : Systems Programming, Rust, C, Ada, Micro-skills, Cooking, Chess, Touhou on Lunatic\n\
                      -----------------------------------\n\
+                     ℹ️ [EDITOR INFO]\n\
                      • Version       : v1.2.0\n\
                      • Target File   : {}\n\
                      • Total Lines   : {}\n\
@@ -173,7 +134,7 @@ impl Palette {
                 "📖 [ELIDE COMMAND PALETTE MANUAL]\n\
                  • Flags: -c (Compile), -d (Debug), -s (Save), -i (Info), -bro! (Vent)\n\
                  • File Cmds: new <file>, code <file>, switch <file>\n\
-                 • Overrides: set-build <cmd>, sh <cmd>"
+                 • Overrides: set-build <cmd>, lsp <cmd>, sh <cmd>"
                     .to_string(),
                 true,
             ),
@@ -254,11 +215,15 @@ impl Palette {
                     (format!("Custom build command set to: '{}'", cmd), true)
                 }
             }
+            PaletteAction::SetLsp(cmd) => {
+                if cmd.is_empty() {
+                    ("Error: Specify an LSP command (e.g., lsp rust-analyzer).".to_string(), false)
+                } else {
+                    (format!("Starting LSP: {}", cmd), true)
+                }
+            }
             PaletteAction::UnknownCommand(cmd) => {
                 (format!("Unknown command: {}", cmd), false)
-            }
-            PaletteAction::UnknownCode(code) => {
-                (format!("Unknown code: {}", code), false)
             }
             PaletteAction::Empty => ("No command entered.".to_string(), true),
         }

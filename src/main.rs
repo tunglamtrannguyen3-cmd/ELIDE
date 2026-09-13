@@ -24,6 +24,37 @@ use std::{
 use tokio::sync::mpsc;
 use terminal::InputEvent;
 
+// Helper to colorize and print words as they are assembled
+fn flush_token(stdout: &mut std::io::Stdout, word: &mut String, next_char: Option<char>) -> std::io::Result<()> {
+    if word.is_empty() { return Ok(()); }
+    
+    let color = match word.as_str() {
+        // Core Rust Keywords
+        "fn" | "let" | "mut" | "return" | "if" | "else" | "match" | "struct" | "enum" | "pub" | "use" | "impl" | "for" | "while" | "loop" | "const" | "static" | "async" | "await" | "trait" | "type" | "as" | "ref" 
+            => colors::Palette::KEYWORD_PURPLE,
+        // Common Types
+        "String" | "usize" | "i32" | "u32" | "f64" | "bool" | "Vec" | "Option" | "Result" | "Self" 
+            => colors::Palette::TYPE_YELLOW,
+        // Booleans
+        "true" | "false" 
+            => colors::Palette::NUMBER_ORANGE,
+        _ => {
+            if word.chars().all(|c| c.is_ascii_digit()) {
+                colors::Palette::NUMBER_ORANGE // Numbers
+            } else if next_char == Some('(') || next_char == Some('!') {
+                colors::Palette::FUNCTION_BLUE // Functions & Macros
+            } else {
+                colors::Palette::TEXT_DEFAULT // Standard text
+            }
+        }
+    };
+
+    stdout.execute(SetForegroundColor(color))?;
+    write!(stdout, "{}", word)?;
+    word.clear();
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let _guard = terminal::TerminalGuard::init()?;
@@ -44,22 +75,28 @@ async fn main() -> Result<()> {
     let mut show_lsp_pane = false; 
     let mut lsp_scroll_offset: usize = 0;
 
-    if let Some(ref filename) = editor.filename {
-        let _ = lsp_client.start(filename, diag_tx.clone()).await;
-    }
-
     loop {
         let (term_width, term_height) = crossterm::terminal::size()?;
         
         // --- LAYOUT MATH ---
+        let banner = [
+            "┌──────────────────────────────────────────────┐",
+            "│  E L I D E  ::  Easier Life @ IDE  :: v1.2.0 │",
+            "└──────────────────────────────────────────────┘",
+        ];
+        let banner_height = banner.len();
+
         // 1. Vertical Split: Terminal (60%) vs Codespace
         let term_pane_height = if palette.is_active {
             ((term_height as usize) * 60) / 100
         } else {
             0
         };
-        // The top area height (Codespace + LSP) leaves room for the Terminal + Status Bar (1 line) + Palette Input (1 line)
-        let editor_height = (term_height as usize).saturating_sub(term_pane_height).saturating_sub(2);
+        // The top area height (Codespace + LSP) leaves room for Banner + Terminal + Status Bar (1 line) + Palette Input (1 line)
+        let editor_height = (term_height as usize)
+            .saturating_sub(term_pane_height)
+            .saturating_sub(2)
+            .saturating_sub(banner_height);
         
         // 2. Horizontal Split: LSP (10%) vs Codespace
         let debug_width = if show_lsp_pane {
@@ -97,11 +134,23 @@ async fn main() -> Result<()> {
                     match key.code {
                         crossterm::event::KeyCode::Enter => {
                             let action = palette.parse_command(editor.filename.as_deref());
+                            
+                            // Check if this is an LSP command before execution consumes it
+                            let lsp_start_cmd = match &action {
+                                palette::PaletteAction::SetLsp(cmd) if !cmd.is_empty() => Some(cmd.clone()),
+                                _ => None,
+                            };
+
                             let (msg, success) = palette.execute_action(action, &mut editor).await;
                             
-                            if success && lsp_client.server_name == "Disconnected" {
+                            // If the command was to start the LSP, execute it on the LspClient
+                            if let Some(cmd) = lsp_start_cmd {
                                 if let Some(ref filename) = editor.filename {
-                                    let _ = lsp_client.start(filename, diag_tx.clone()).await;
+                                    if let Err(e) = lsp_client.start(&cmd, filename, diag_tx.clone()).await {
+                                        command_history.push((format!("LSP Boot Error: {}", e), false));
+                                    }
+                                } else {
+                                    command_history.push(("Error: You must open a file before starting an LSP.".to_string(), false));
                                 }
                             }
                             
@@ -140,10 +189,19 @@ async fn main() -> Result<()> {
         stdout.execute(cursor::Hide)?;
         stdout.execute(Clear(ClearType::All))?;
 
-        // 1. Draw Codespace Box (Top Left, 100% or 90% width)
+        // 0. Draw Banner (At the very top)
+        for (i, line) in banner.iter().enumerate() {
+            stdout.execute(cursor::MoveTo(0, i as u16))?;
+            stdout.execute(SetForegroundColor(Color::Cyan))?; 
+            write!(stdout, "{}", line)?;
+            stdout.execute(ResetColor)?;
+        }
+
+        // 1. Draw Codespace Box with Relaxing Syntax Highlighting
         for i in 0..editor_height {
             let row = editor.row_offset + i;
-            stdout.execute(cursor::MoveTo(0, i as u16))?;
+            let screen_y = (banner_height + i) as u16;
+            stdout.execute(cursor::MoveTo(0, screen_y))?;
             
             if row < editor.lines.len() {
                 let line = &editor.lines[row];
@@ -152,8 +210,63 @@ async fn main() -> Result<()> {
                     .skip(editor.col_offset)
                     .take(edit_pane_w)
                     .collect();
-                let formatted = format!("{:3} | {:<w$}", row + 1, display_line, w = edit_pane_w);
-                write!(stdout, "{}", &formatted[..std::cmp::min(formatted.len(), codespace_width)])?;
+                
+                // Draw Line Number in Dark Grey
+                stdout.execute(SetForegroundColor(Color::DarkGrey))?;
+                write!(stdout, "{:3} | ", row + 1)?;
+
+                // --- Syntax Highlighting State Machine ---
+                let mut in_string = false;
+                let mut in_comment = false;
+                let mut word = String::new();
+                let chars: Vec<char> = display_line.chars().collect();
+
+                for char_idx in 0..chars.len() {
+                    let c = chars[char_idx];
+                    let next_c = chars.get(char_idx + 1).copied();
+                    
+                    if in_comment {
+                        stdout.execute(SetForegroundColor(colors::Palette::COMMENT_GRAY))?;
+                        write!(stdout, "{}", c)?;
+                    } else if in_string {
+                        stdout.execute(SetForegroundColor(colors::Palette::STRING_GREEN))?;
+                        write!(stdout, "{}", c)?;
+                        if c == '"' { in_string = false; }
+                    } else {
+                        // Check for start of comments //
+                        if c == '/' && next_c == Some('/') {
+                            let _ = flush_token(&mut stdout, &mut word, Some('/'));
+                            in_comment = true;
+                            stdout.execute(SetForegroundColor(colors::Palette::COMMENT_GRAY))?;
+                            write!(stdout, "{}", c)?;
+                        // Check for start of strings "
+                        } else if c == '"' {
+                            let _ = flush_token(&mut stdout, &mut word, Some('"'));
+                            in_string = true;
+                            stdout.execute(SetForegroundColor(colors::Palette::STRING_GREEN))?;
+                            write!(stdout, "{}", c)?;
+                        // Build up words
+                        } else if c.is_alphanumeric() || c == '_' {
+                            word.push(c);
+                        // Print symbols
+                        } else {
+                            let _ = flush_token(&mut stdout, &mut word, Some(c));
+                            stdout.execute(SetForegroundColor(colors::Palette::TEXT_DEFAULT))?;
+                            write!(stdout, "{}", c)?;
+                        }
+                    }
+                }
+                // Flush any remaining word at the end of the line
+                let _ = flush_token(&mut stdout, &mut word, None);
+                
+                // Pad the remaining space so layout doesn't break
+                let visual_len = chars.len();
+                if visual_len < edit_pane_w {
+                    stdout.execute(ResetColor)?;
+                    write!(stdout, "{}", " ".repeat(edit_pane_w - visual_len))?;
+                }
+                
+                stdout.execute(ResetColor)?;
             } else {
                 stdout.execute(SetForegroundColor(Color::DarkGrey))?;
                 write!(stdout, "{}", "~".repeat(codespace_width.min(4)))?;
@@ -161,10 +274,13 @@ async fn main() -> Result<()> {
             }
         }
 
-        // 2. Draw Diagnosis LSP Box (Top Right, 10% width)
+        // 2. Draw Diagnosis LSP Box
         if show_lsp_pane && debug_width > 0 {
             let debug_x = codespace_width as u16;
-            for i in 0..editor_height {
+            let total_top_height = banner_height + editor_height;
+            
+            // Draw the vertical divider wall all the way from the top
+            for i in 0..total_top_height {
                 stdout.execute(cursor::MoveTo(debug_x, i as u16))?;
                 stdout.execute(SetForegroundColor(Color::DarkGrey))?;
                 write!(stdout, "│")?;
@@ -194,7 +310,7 @@ async fn main() -> Result<()> {
                     }
                 }
 
-                let max_display_lines = editor_height.saturating_sub(3);
+                let max_display_lines = total_top_height.saturating_sub(3);
                 let max_scroll = wrapped_lines.len().saturating_sub(max_display_lines);
                 lsp_scroll_offset = lsp_scroll_offset.min(max_scroll);
 
@@ -205,8 +321,8 @@ async fn main() -> Result<()> {
             }
         }
 
-        // 3. Draw Status Bar (The horizontal boundary)
-        let status_row = editor_height as u16;
+        // 3. Draw Status Bar (Below the Codespace and Banner)
+        let status_row = (banner_height + editor_height) as u16;
         stdout.execute(cursor::MoveTo(0, status_row))?;
         stdout.execute(SetForegroundColor(Color::Black))?;
         stdout.execute(SetBackgroundColor(Color::White))?;
@@ -220,7 +336,7 @@ async fn main() -> Result<()> {
         write!(stdout, "{:width$}", status, width = term_width as usize)?;
         stdout.execute(ResetColor)?;
 
-        // 4. Draw Persistent Terminal Pane (Bottom, 60% height placeholder)
+        // 4. Draw Persistent Terminal Pane
         if palette.is_active && term_pane_height > 0 {
             let term_start_row = status_row + 1;
             
@@ -261,7 +377,7 @@ async fn main() -> Result<()> {
             }
         }
 
-        // 5. Draw Command Palette Input Line (Absolute Bottom)
+        // 5. Draw Command Palette Input Line
         stdout.execute(cursor::MoveTo(0, term_height - 1))?;
         if palette.is_active {
             stdout.execute(SetForegroundColor(Color::Yellow))?;
@@ -277,11 +393,11 @@ async fn main() -> Result<()> {
         if palette.is_active {
             stdout.execute(cursor::MoveTo((2 + palette.input_buffer.len()) as u16, term_height - 1))?;
         } else {
-            let screen_row = (editor.cursor.row.saturating_sub(editor.row_offset)) as u16;
+            let screen_row = (editor.cursor.row.saturating_sub(editor.row_offset) + banner_height) as u16;
             let visual_col = editor.visual_cursor_col().saturating_sub(editor.col_offset);
             let screen_col = (visual_col + 6).min(codespace_width.saturating_sub(1)) as u16;
             
-            if (screen_row as usize) < editor_height {
+            if (screen_row as usize) < (banner_height + editor_height) {
                 stdout.execute(cursor::MoveTo(screen_col, screen_row))?;
             }
         }
