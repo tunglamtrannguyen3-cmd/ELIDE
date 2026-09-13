@@ -33,13 +33,6 @@ impl Palette {
         }
     }
 
-    pub fn toggle(&mut self) {
-        self.is_active = !self.is_active;
-        if !self.is_active {
-            self.input_buffer.clear();
-        }
-    }
-
     fn extract_arg(cmd: &str, prefix: &str) -> String {
         cmd[prefix.len()..]
             .trim()
@@ -82,7 +75,6 @@ impl Palette {
                     || input.contains("begin ")
             }
             "adb" | "ads" | "ada" => {
-                // Catches Rust, C/C++, Java, Python, and JS/TS pasted into Ada
                 input.contains("fn ")
                     || input.contains("let mut")
                     || input.contains("#include")
@@ -156,12 +148,12 @@ impl Palette {
             PaletteAction::Info => {
                 let info = format!(
                     "ℹ️ [ELIDE INFO]\n\
-                     • Version       : v1.2.0\n\
                      • Author        : Eggchese\n\
                      • Email         : (tunglamtrannguyen3@gmail.com)\n\
-                     • Favorite Idol : Dream\n\
-                     • Skills        : Systems Programming, Rust, Linux Kernel, TUI Arch\n\
+                     • Favorite Idol : Yatsuzume\n\
+                     • Skills        : Systems Programming, Rust, C, Ada, Micro-skills, Cooking, Chess, Touhou on Lunatic\n\
                      -----------------------------------\n\
+                     • Version       : v1.2.0\n\
                      • Target File   : {}\n\
                      • Total Lines   : {}\n\
                      • Cursor Pos    : Row {}, Col {}\n\

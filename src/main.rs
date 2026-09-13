@@ -38,8 +38,10 @@ async fn main() -> Result<()> {
 
     // UI State
     let mut current_diagnostics: Vec<diagnostics::Diagnostic> = Vec::new();
-    let mut command_msg: Option<(String, bool)> = None;
-    let mut show_lsp_pane = true;
+    let mut command_history: Vec<(String, bool)> = Vec::new(); 
+    
+    // Default Idle State: 100% Codespace
+    let mut show_lsp_pane = false; 
     let mut lsp_scroll_offset: usize = 0;
 
     if let Some(ref filename) = editor.filename {
@@ -49,15 +51,23 @@ async fn main() -> Result<()> {
     loop {
         let (term_width, term_height) = crossterm::terminal::size()?;
         
-        let usable_height = term_height.saturating_sub(2) as usize;
-        
-        // Shrink LSP width to 20%, Codespace gets 80%
-        let codespace_width = if show_lsp_pane {
-            ((term_width as usize) * 8 / 10).max(20)
+        // --- LAYOUT MATH ---
+        // 1. Vertical Split: Terminal (60%) vs Codespace
+        let term_pane_height = if palette.is_active {
+            ((term_height as usize) * 60) / 100
         } else {
-            term_width as usize
+            0
         };
-        let debug_width = (term_width as usize).saturating_sub(codespace_width);
+        // The top area height (Codespace + LSP) leaves room for the Terminal + Status Bar (1 line) + Palette Input (1 line)
+        let editor_height = (term_height as usize).saturating_sub(term_pane_height).saturating_sub(2);
+        
+        // 2. Horizontal Split: LSP (10%) vs Codespace
+        let debug_width = if show_lsp_pane {
+            ((term_width as usize) * 10) / 100
+        } else {
+            0
+        };
+        let codespace_width = (term_width as usize).saturating_sub(debug_width);
 
         while let Ok(diags) = diag_rx.try_recv() {
             current_diagnostics = diags;
@@ -67,29 +77,23 @@ async fn main() -> Result<()> {
 
         match event {
             InputEvent::Key(key) => {
-                if !palette.is_active 
-                    && !terminal::is_alt_t(&key) 
-                    && !terminal::is_alt_l(&key)
-                    && !terminal::is_alt_up(&key)
-                    && !terminal::is_alt_down(&key) {
-                    command_msg = None;
-                }
-
+                // EXCLUSIVE CLOSING LOGIC
                 if terminal::is_esc(&key) {
                     if palette.is_active {
-                        palette.toggle();
+                        palette.is_active = false; // ONLY Esc closes terminal
                     } else {
-                        break;
+                        break; // Exit app if terminal is already closed
                     }
                 } else if terminal::is_alt_t(&key) {
-                    palette.toggle();
+                    palette.is_active = true; // Open terminal (doesn't toggle off)
                 } else if terminal::is_alt_l(&key) {
-                    show_lsp_pane = !show_lsp_pane;
+                    show_lsp_pane = !show_lsp_pane; // Alt+L toggles LSP
                 } else if terminal::is_alt_up(&key) {
                     lsp_scroll_offset = lsp_scroll_offset.saturating_sub(1);
                 } else if terminal::is_alt_down(&key) {
                     lsp_scroll_offset = lsp_scroll_offset.saturating_add(1);
                 } else if palette.is_active {
+                    // Terminal Input Handling
                     match key.code {
                         crossterm::event::KeyCode::Enter => {
                             let action = palette.parse_command(editor.filename.as_deref());
@@ -101,14 +105,15 @@ async fn main() -> Result<()> {
                                 }
                             }
                             
-                            command_msg = Some((msg, success));
-                            palette.toggle();
+                            command_history.push((msg, success));
+                            palette.input_buffer.clear(); // Clear input, but keep terminal open!
                         }
                         crossterm::event::KeyCode::Char(c) => palette.input_buffer.push(c),
                         crossterm::event::KeyCode::Backspace => { palette.input_buffer.pop(); },
                         _ => {}
                     }
                 } else {
+                    // Codespace Input Handling
                     match key.code {
                         crossterm::event::KeyCode::Char(c) => editor.insert_char(c),
                         crossterm::event::KeyCode::Enter => editor.insert_newline(),
@@ -129,14 +134,14 @@ async fn main() -> Result<()> {
         }
 
         let edit_pane_w = codespace_width.saturating_sub(6);
-        editor.scroll_into_view(edit_pane_w, usable_height);
+        editor.scroll_into_view(edit_pane_w, editor_height);
 
         // --- RENDER PASS ---
         stdout.execute(cursor::Hide)?;
         stdout.execute(Clear(ClearType::All))?;
 
-        // 1. Draw Codespace Box
-        for i in 0..usable_height {
+        // 1. Draw Codespace Box (Top Left, 100% or 90% width)
+        for i in 0..editor_height {
             let row = editor.row_offset + i;
             stdout.execute(cursor::MoveTo(0, i as u16))?;
             
@@ -156,10 +161,10 @@ async fn main() -> Result<()> {
             }
         }
 
-        // 2. Draw Debug Box / LSP (Wrapped & Scrollable)
+        // 2. Draw Diagnosis LSP Box (Top Right, 10% width)
         if show_lsp_pane && debug_width > 0 {
             let debug_x = codespace_width as u16;
-            for i in 0..usable_height {
+            for i in 0..editor_height {
                 stdout.execute(cursor::MoveTo(debug_x, i as u16))?;
                 stdout.execute(SetForegroundColor(Color::DarkGrey))?;
                 write!(stdout, "│")?;
@@ -168,15 +173,15 @@ async fn main() -> Result<()> {
 
             stdout.execute(cursor::MoveTo(debug_x + 2, 0))?;
             stdout.execute(SetForegroundColor(Color::Cyan))?;
-            write!(stdout, "[ DEBUG / LSP ]")?;
+            write!(stdout, "LSP")?;
             stdout.execute(ResetColor)?;
 
             if current_diagnostics.is_empty() {
                 stdout.execute(cursor::MoveTo(debug_x + 2, 2))?;
-                write!(stdout, "Status: Nominal")?;
+                write!(stdout, "Nominal")?;
             } else {
                 let mut wrapped_lines = Vec::new();
-                let text_width = debug_width.saturating_sub(4);
+                let text_width = debug_width.saturating_sub(3);
                 
                 if text_width > 0 {
                     for diag in &current_diagnostics {
@@ -189,7 +194,7 @@ async fn main() -> Result<()> {
                     }
                 }
 
-                let max_display_lines = usable_height.saturating_sub(3);
+                let max_display_lines = editor_height.saturating_sub(3);
                 let max_scroll = wrapped_lines.len().saturating_sub(max_display_lines);
                 lsp_scroll_offset = lsp_scroll_offset.min(max_scroll);
 
@@ -200,8 +205,9 @@ async fn main() -> Result<()> {
             }
         }
 
-        // 3. Draw Status Bar
-        stdout.execute(cursor::MoveTo(0, term_height - 2))?;
+        // 3. Draw Status Bar (The horizontal boundary)
+        let status_row = editor_height as u16;
+        stdout.execute(cursor::MoveTo(0, status_row))?;
         stdout.execute(SetForegroundColor(Color::Black))?;
         stdout.execute(SetBackgroundColor(Color::White))?;
         let status = format!(
@@ -214,43 +220,68 @@ async fn main() -> Result<()> {
         write!(stdout, "{:width$}", status, width = term_width as usize)?;
         stdout.execute(ResetColor)?;
 
-        // 4. Draw Command Palette
+        // 4. Draw Persistent Terminal Pane (Bottom, 60% height placeholder)
+        if palette.is_active && term_pane_height > 0 {
+            let term_start_row = status_row + 1;
+            
+            // Render Command History
+            let mut display_history = Vec::new();
+            for (msg, success) in &command_history {
+                for line in msg.lines() {
+                    display_history.push((line.to_string(), *success));
+                }
+            }
+            
+            let term_output_height = term_pane_height.saturating_sub(1);
+            let start_idx = display_history.len().saturating_sub(term_output_height);
+            
+            for (idx, (line, success)) in display_history.iter().skip(start_idx).take(term_output_height).enumerate() {
+                stdout.execute(cursor::MoveTo(0, term_start_row + idx as u16))?;
+                
+                let status_type = if *success { 
+                    colors::Status::Success 
+                } else if line.starts_with("Unknown") {
+                    colors::Status::UnknownCommand
+                } else if line.starts_with("Code") {
+                    colors::Status::UnknownCode
+                } else if line.contains("warn") || line.contains("Warning") {
+                    colors::Status::Warning
+                } else if line.contains("hint") || line.contains("Hint") {
+                    colors::Status::Hint
+                } else { 
+                    colors::Status::Error 
+                };
+
+                stdout.execute(SetAttribute(colors::attribute_for_status(status_type)))?;
+                stdout.execute(SetForegroundColor(colors::color_for_status(status_type)))?;
+                write!(stdout, "{}", &line[..std::cmp::min(line.len(), term_width as usize)])?;
+                
+                stdout.execute(SetAttribute(Attribute::Reset))?;
+                stdout.execute(ResetColor)?;
+            }
+        }
+
+        // 5. Draw Command Palette Input Line (Absolute Bottom)
         stdout.execute(cursor::MoveTo(0, term_height - 1))?;
         if palette.is_active {
             stdout.execute(SetForegroundColor(Color::Yellow))?;
             write!(stdout, ": {}", palette.input_buffer)?;
             stdout.execute(ResetColor)?;
-        } else if let Some((msg, success)) = &command_msg {
-           let status_type = if *success { 
-    colors::Status::Success 
-} else if msg.starts_with("Unknown") {
-    colors::Status::UnknownCommand
-} else if msg.starts_with("Code") {
-    colors::Status::UnknownCode
-} else if msg.contains("warn") || msg.contains("Warning") {
-    colors::Status::Warning
-} else if msg.contains("hint") || msg.contains("Hint") {
-    colors::Status::Hint
-} else { 
-    colors::Status::Error 
-};
-
-            stdout.execute(SetAttribute(colors::attribute_for_status(status_type)))?;
-            stdout.execute(SetForegroundColor(colors::color_for_status(status_type)))?;
-            write!(stdout, "{}", msg.replace('\n', " | "))?;
-            
-            stdout.execute(SetAttribute(Attribute::Reset))?;
+        } else {
+            stdout.execute(SetForegroundColor(Color::DarkGrey))?;
+            write!(stdout, ": (press Alt+T for terminal, Esc to close)")?;
             stdout.execute(ResetColor)?;
         }
 
-        // 5. Sync Hardware Cursor
+        // 6. Sync Hardware Cursor
         if palette.is_active {
             stdout.execute(cursor::MoveTo((2 + palette.input_buffer.len()) as u16, term_height - 1))?;
         } else {
             let screen_row = (editor.cursor.row.saturating_sub(editor.row_offset)) as u16;
             let visual_col = editor.visual_cursor_col().saturating_sub(editor.col_offset);
             let screen_col = (visual_col + 6).min(codespace_width.saturating_sub(1)) as u16;
-            if (screen_row as usize) < usable_height {
+            
+            if (screen_row as usize) < editor_height {
                 stdout.execute(cursor::MoveTo(screen_col, screen_row))?;
             }
         }
