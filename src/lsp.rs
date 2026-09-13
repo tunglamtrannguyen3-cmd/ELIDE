@@ -29,7 +29,7 @@ impl LspClient {
         let cmd = match ext {
             "rs" => "rust-analyzer",
             "cpp" | "c" | "h" | "hpp" => "clangd",
-            "adb" | "ads" | "ada" => "ada_language_server",
+            "adb" | "ads" | "ada" | "gpr" => "ada_language_server",
             _ => return Ok(()),
         };
 
