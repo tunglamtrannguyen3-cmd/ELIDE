@@ -144,10 +144,13 @@ async fn main() -> Result<()> {
                             let (msg, success) = palette.execute_action(action, &mut editor).await;
                             
                             // If the command was to start the LSP, execute it on the LspClient
+                           // If the command was to start the LSP, execute it on the LspClient
                             if let Some(cmd) = lsp_start_cmd {
                                 if let Some(ref filename) = editor.filename {
                                     if let Err(e) = lsp_client.start(&cmd, filename, diag_tx.clone()).await {
                                         command_history.push((format!("LSP Boot Error: {}", e), false));
+                                    } else {
+                                        show_lsp_pane = true; // <-- NEW: Pop open the pane!
                                     }
                                 } else {
                                     command_history.push(("Error: You must open a file before starting an LSP.".to_string(), false));

@@ -49,7 +49,6 @@ impl LspClient {
         let mut stdin = child.stdin.take().expect("Failed to open stdin");
         let stdout = child.stdout.take().expect("Failed to open stdout");
 
-        // Save the new process so we can kill it next time we switch
         self._child = Some(child);
 
         let file_path = std::fs::canonicalize(filename).unwrap_or_else(|_| std::path::PathBuf::from(filename));
@@ -57,7 +56,6 @@ impl LspClient {
         let current_dir = std::env::current_dir().unwrap_or_default();
         let root_uri = format!("file://{}", current_dir.display());
 
-        // 2. Map standard file extensions to LSP Language IDs
         let ext = filename.split('.').last().unwrap_or("");
         let language_id = match ext {
             "rs" => "rust",
@@ -70,6 +68,7 @@ impl LspClient {
             _ => "plaintext",
         };
 
+        // --- STEP 1: Send the initialize request ---
         let init_req = json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -88,6 +87,29 @@ impl LspClient {
         });
         send_message(&mut stdin, init_req).await?;
 
+        // --- STEP 2: Wait for the LSP to reply ---
+        let mut reader = BufReader::new(stdout);
+        let mut len = 0;
+        loop {
+            let mut header_line = String::new();
+            if reader.read_line(&mut header_line).await.unwrap_or(0) == 0 {
+                return Err(anyhow::anyhow!("LSP stream closed prematurely")); 
+            }
+            let header_line = header_line.trim();
+            if header_line.is_empty() { break; }
+            if header_line.starts_with("Content-Length:") {
+                if let Ok(l) = header_line[15..].trim().parse::<usize>() {
+                    len = l;
+                }
+            }
+        }
+
+        if len > 0 {
+            let mut body = vec![0; len];
+            reader.read_exact(&mut body).await?; // Consume the InitializeResult
+        }
+
+        // --- STEP 3: Safe to send notifications now! ---
         let initialized_notif = json!({
             "jsonrpc": "2.0",
             "method": "initialized",
@@ -109,23 +131,17 @@ impl LspClient {
         });
         send_message(&mut stdin, did_open_req).await?;
 
+        // --- STEP 4: Start continuous background diagnostic listener ---
         tokio::spawn(async move {
-            let mut reader = BufReader::new(stdout);
             loop {
                 let mut len = 0;
                 loop {
                     let mut header_line = String::new();
-                    if reader.read_line(&mut header_line).await.unwrap_or(0) == 0 {
-                        return; 
-                    }
+                    if reader.read_line(&mut header_line).await.unwrap_or(0) == 0 { return; }
                     let header_line = header_line.trim();
-                    if header_line.is_empty() {
-                        break; 
-                    }
+                    if header_line.is_empty() { break; }
                     if header_line.starts_with("Content-Length:") {
-                        if let Ok(l) = header_line[15..].trim().parse::<usize>() {
-                            len = l;
-                        }
+                        if let Ok(l) = header_line[15..].trim().parse::<usize>() { len = l; }
                     }
                 }
 
