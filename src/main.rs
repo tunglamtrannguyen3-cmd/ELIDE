@@ -6,6 +6,7 @@ mod diagnostics;
 mod process;
 mod colors;
 mod tracer;
+mod lsp_writer
 
 use anyhow::Result;
 use crossterm::{
