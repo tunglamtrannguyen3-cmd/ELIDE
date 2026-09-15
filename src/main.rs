@@ -6,7 +6,7 @@ mod diagnostics;
 mod process;
 mod colors;
 mod tracer;
-mod lsp_writer
+mod lsp_writer;
 
 use anyhow::Result;
 use crossterm::{
@@ -68,14 +68,16 @@ async fn main() -> Result<()> {
 
     let (diag_tx, mut diag_rx) = mpsc::unbounded_channel::<Vec<diagnostics::Diagnostic>>();
 
-    // UI State
+   
+
+// UI State
     let mut current_diagnostics: Vec<diagnostics::Diagnostic> = Vec::new();
     let mut command_history: Vec<(String, bool)> = Vec::new(); 
+    let mut doc_version: u32 = 1; // <-- NEW: Track document version for LSP
     
     // Default Idle State: 100% Codespace
     let mut show_lsp_pane = false; 
     let mut lsp_scroll_offset: usize = 0;
-
     loop {
         let (term_width, term_height) = crossterm::terminal::size()?;
         
@@ -164,28 +166,45 @@ async fn main() -> Result<()> {
                         crossterm::event::KeyCode::Char(c) => palette.input_buffer.push(c),
                         crossterm::event::KeyCode::Backspace => { palette.input_buffer.pop(); },
                         _ => {}
+                        // Cleaned up the unused variable warning here!
+            
                     }
                 } else {
                     // Codespace Input Handling
+                    let mut text_changed = false;
+                    
                     match key.code {
-                        crossterm::event::KeyCode::Char(c) => editor.insert_char(c),
-                        crossterm::event::KeyCode::Enter => editor.insert_newline(),
-                        crossterm::event::KeyCode::Backspace => editor.backspace(),
-                        crossterm::event::KeyCode::Delete => editor.delete_char(),
+                        // Mark text_changed = true only for keys that alter the buffer
+                        crossterm::event::KeyCode::Char(c) => { editor.insert_char(c); text_changed = true; },
+                        crossterm::event::KeyCode::Enter => { editor.insert_newline(); text_changed = true; },
+                        crossterm::event::KeyCode::Backspace => { editor.backspace(); text_changed = true; },
+                        crossterm::event::KeyCode::Delete => { editor.delete_char(); text_changed = true; },
+                        
+                        // Movement doesn't change the text, so we leave it alone
                         crossterm::event::KeyCode::Left => editor.move_cursor(0, -1),
                         crossterm::event::KeyCode::Right => editor.move_cursor(0, 1),
                         crossterm::event::KeyCode::Up => editor.move_cursor(-1, 0),
                         crossterm::event::KeyCode::Down => editor.move_cursor(1, 0),
                         _ => {}
                     }
+
+                    // Sync changes to the LSP server if a mutation happened
+                    if text_changed {
+                        if let Some(ref filename) = editor.filename {
+                            doc_version += 1;
+                            let full_text = editor.lines.join("\n");
+                            let _ = lsp_client.notify_change(filename, doc_version, &full_text);
+                        }
+                    }
                 }
             }
+            // Cleaned up the unused variable warning here!
             InputEvent::Resize(w, h) => {
-                let _ = (w, h);
+                let _ = (w, h); // This tells Rust we read the variables
             }
             InputEvent::Tick => {}
         }
-
+        
         let edit_pane_w = codespace_width.saturating_sub(6);
         editor.scroll_into_view(edit_pane_w, editor_height);
 

@@ -1,7 +1,7 @@
 use anyhow::Result;
 use serde_json::json;
 use std::process::Stdio;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader}; // AsyncWriteExt removed
 use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
 use crate::diagnostics::Diagnostic;
@@ -9,6 +9,7 @@ use crate::diagnostics::Diagnostic;
 pub struct LspClient {
     pub server_name: String,
     _child: Option<Child>,
+    writer: Option<crate::lsp_writer::LspWriter>,
 }
 
 impl LspClient {
@@ -16,6 +17,7 @@ impl LspClient {
         Self {
             server_name: "Disconnected".to_string(),
             _child: None,
+            writer: None,
         }
     }
 
@@ -46,10 +48,14 @@ impl LspClient {
             }
         };
 
-        let mut stdin = child.stdin.take().expect("Failed to open stdin");
+        let stdin = child.stdin.take().expect("Failed to open stdin"); // Removed 'mut'
         let stdout = child.stdout.take().expect("Failed to open stdout");
 
         self._child = Some(child);
+
+        // --- NEW: Spawn the persistent background writer ---
+        let writer = crate::lsp_writer::LspWriter::spawn(stdin);
+        self.writer = Some(writer.clone());
 
         let file_path = std::fs::canonicalize(filename).unwrap_or_else(|_| std::path::PathBuf::from(filename));
         let file_uri = format!("file://{}", file_path.display());
@@ -85,7 +91,7 @@ impl LspClient {
                 }
             }
         });
-        send_message(&mut stdin, init_req).await?;
+        writer.send(init_req)?; // --- NEW
 
         // --- STEP 2: Wait for the LSP to reply ---
         let mut reader = BufReader::new(stdout);
@@ -115,7 +121,7 @@ impl LspClient {
             "method": "initialized",
             "params": {}
         });
-        send_message(&mut stdin, initialized_notif).await?;
+        writer.send(initialized_notif)?; // --- NEW
 
         let did_open_req = json!({
             "jsonrpc": "2.0",
@@ -129,7 +135,7 @@ impl LspClient {
                 }
             }
         });
-        send_message(&mut stdin, did_open_req).await?;
+        writer.send(did_open_req)?; // --- NEW
 
         // --- STEP 4: Start continuous background diagnostic listener ---
         tokio::spawn(async move {
@@ -168,12 +174,30 @@ impl LspClient {
 
         Ok(())
     }
-}
 
-async fn send_message(stdin: &mut tokio::process::ChildStdin, msg: serde_json::Value) -> Result<()> {
-    let msg_str = msg.to_string();
-    let payload = format!("Content-Length: {}\r\n\r\n{}", msg_str.len(), msg_str);
-    stdin.write_all(payload.as_bytes()).await?;
-    stdin.flush().await?;
-    Ok(())
+    // --- NEW: Handle document updates from main.rs ---
+    pub fn notify_change(&self, filename: &str, version: u32, text: &str) -> Result<()> {
+        let file_path = std::fs::canonicalize(filename).unwrap_or_else(|_| std::path::PathBuf::from(filename));
+        let file_uri = format!("file://{}", file_path.display());
+
+        let did_change_req = json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didChange",
+            "params": {
+                "textDocument": {
+                    "uri": file_uri,
+                    "version": version
+                },
+                "contentChanges": [
+                    { "text": text }
+                ]
+            }
+        });
+
+        if let Some(writer) = &self.writer {
+            writer.send(did_change_req)?;
+        }
+        
+        Ok(())
+    }
 }
