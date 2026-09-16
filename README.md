@@ -1,3 +1,5 @@
+<img width="1254" height="1254" alt="Duck-ai-image-2026-09-16-08-37" src="https://github.com/user-attachments/assets/0b2355e9-182d-4f76-b84c-61af7d05987b" />
+
 # ⚡ ELIDE
 
 ### A lightweight terminal IDE that doesn't need a spaceship to edit a file.
