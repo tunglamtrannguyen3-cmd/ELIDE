@@ -18,6 +18,7 @@ pub enum PaletteAction {
     Switch(String),
     SetBuild(String),
     SetLsp(String),
+    Acel(String),
 }
 
 pub struct Palette {
@@ -70,9 +71,11 @@ impl Palette {
         } else if trimmed.starts_with("sh ") {
             let raw_bash = trimmed[3..].trim().to_string();
             PaletteAction::RunBash(raw_bash)
+        } else if trimmed.starts_with("acel ") { // <-- NEW
+            PaletteAction::Acel(Self::extract_arg(trimmed, "acel "))
         } else {
             PaletteAction::UnknownCommand(trimmed.to_string())
-        }
+        } 
     }
 
     pub async fn execute_action(
@@ -226,6 +229,20 @@ impl Palette {
                 (format!("Unknown command: {}", cmd), false)
             }
             PaletteAction::Empty => ("No command entered.".to_string(), true),
-        }
-    }
-}
+             // (Make sure there is NO closing brace `}` for the match block right here!)
+            
+            PaletteAction::Acel(cmd) => {
+                if cmd.is_empty() {
+                    ("Error: Specify an app to run (e.g., acel moon-buggy).".to_string(), false)
+                } else {
+                    match process::run_interactive_cmd(&cmd).await {
+                        Ok(_) => (format!("Returned from: {}", cmd), true),
+                        Err(e) => (format!("Failed to launch app: {}", e), false),
+                    }
+                }
+            }
+
+            
+        } // <-- THIS is where the match action block closes
+    } // <-- THIS is where the execute_action function closes
+} // <-- THIS is where the impl Palette block closes

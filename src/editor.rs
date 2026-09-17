@@ -1,6 +1,8 @@
 use anyhow::{Context, Result};
 use std::fs;
 use unicode_width::UnicodeWidthStr;
+use std::path::{Path, PathBuf};
+
 
 #[derive(Default, Debug, Clone)]
 pub struct Cursor {
@@ -219,3 +221,26 @@ impl Editor {
     }
 }
 
+pub fn collect_workspace_files(dir: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+
+            // Ignore common noise directories and hidden files
+            if file_name.starts_with('.') || file_name == "target" || file_name == "node_modules" {
+                continue;
+            }
+
+            if path.is_dir() {
+                files.extend(collect_workspace_files(&path));
+            } else if path.is_file() {
+                files.push(path);
+            }
+        }
+    }
+
+    files
+}

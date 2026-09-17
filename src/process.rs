@@ -1,8 +1,14 @@
+use crossterm::{
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    ExecutableCommand,
+};
+use std::io::stdout;
 use anyhow::Result;
 use nix::sys::resource::{getrusage, UsageWho};
 use std::process::Stdio;
 use tokio::process::Command;
 use crate::editor::Editor;
+
 
 #[derive(Debug, Clone)]
 pub struct ProcessResult {
@@ -95,4 +101,35 @@ pub async fn compile_file(editor: &Editor) -> Result<ProcessResult> {
     };
 
     run_bash_cmd(&build_command).await
+}
+
+pub async fn run_interactive_cmd(cmd_str: &str) -> Result<()> {
+    // 1. Temporarily surrender the terminal to the child app
+    let _ = disable_raw_mode();
+    let _ = stdout().execute(LeaveAlternateScreen);
+
+    // 2. Spawn the process interactively (inheriting stdin/stdout/stderr)
+    let mut child = Command::new("/bin/bash")
+        .arg("-c")
+        .arg(cmd_str)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .spawn()?;
+
+    // 3. Wait for the task or game to complete
+    let status = child.wait().await?;
+
+    // 4. Pause execution so developers can read compiler/build output
+    println!("\n\x1b[32m[Process completed with exit status: {}]\x1b[0m", status);
+    println!("\x1b[33mPress ENTER to return to ELIDE...\x1b[0m");
+    
+    let mut pause_buf = String::new();
+    let _ = std::io::stdin().read_line(&mut pause_buf);
+
+    // 5. Reclaim the terminal UI for ELIDE
+    let _ = enable_raw_mode();
+    let _ = stdout().execute(EnterAlternateScreen);
+
+    Ok(())
 }

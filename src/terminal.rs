@@ -7,8 +7,8 @@ use crossterm::{
 use std::{io::stdout, time::Duration};
 
 pub enum InputEvent {
-    Key(KeyEvent),
-    Resize(u16, u16),
+    Key(crossterm::event::KeyEvent),
+    Resize, // Changed from Resize(u16, u16)
     Tick,
 }
 
@@ -33,7 +33,7 @@ pub fn poll_event(timeout: Duration) -> Result<InputEvent> {
     if event::poll(timeout)? {
         match event::read()? {
             Event::Key(key) => Ok(InputEvent::Key(key)),
-            Event::Resize(w, h) => Ok(InputEvent::Resize(w, h)),
+            Event::Resize(_, _) => Ok(InputEvent::Resize),
             _ => Ok(InputEvent::Tick),
         }
     } else {
