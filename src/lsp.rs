@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::{Child, Command};
@@ -8,6 +9,8 @@ use tokio::sync::mpsc;
 
 use crate::diagnostics::Diagnostic;
 use crate::lsp_writer::LspWriter;
+// Assuming process.rs has a function to get the LSP command string from a language ID
+// use crate::process::get_lsp_cmd_for_language; 
 
 pub struct LspClient {
     pub server_name: String,
@@ -24,18 +27,19 @@ impl LspClient {
         }
     }
 
-    pub async fn start(
+    /// Initializes the LSP at the workspace (directory) level.
+    pub async fn init_workspace(
         &mut self,
         lsp_cmd: &str,
-        filename: &str,
+        workspace_dir: &str,
         diag_tx: mpsc::UnboundedSender<Vec<Diagnostic>>,
     ) -> Result<()> {
-        // 1. Kill the old LSP process if one is currently running
+        // 1. Kill old process
         if let Some(mut old_child) = self._child.take() {
             let _ = old_child.kill().await;
         }
 
-        // 2. Spawn the new LSP process
+        // 2. Spawn LSP process
         let mut child = Command::new(lsp_cmd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -53,13 +57,11 @@ impl LspClient {
 
         self._child = Some(child);
 
-        // 3. Spawn the persistent background writer
+        // 3. Spawn background writer
         let writer = LspWriter::spawn(stdin);
         self.writer = Some(writer.clone());
 
-        let file_uri = get_file_uri(filename);
-        let root_uri = get_file_uri(&std::env::current_dir().unwrap_or_default().to_string_lossy());
-        let language_id = get_language_id(filename);
+        let root_uri = get_file_uri(workspace_dir);
 
         // --- STEP 1: Send the initialize request ---
         let init_req = json!({
@@ -80,11 +82,11 @@ impl LspClient {
         });
         writer.send(init_req)?;
 
-        // --- STEP 2: Wait for the LSP to reply ---
+        // --- STEP 2: Wait for LSP reply ---
         let mut reader = BufReader::new(stdout);
         let _initialize_result = read_lsp_message(&mut reader).await?;
 
-        // --- STEP 3: Safe to send notifications now ---
+        // --- STEP 3: Send initialized notification ---
         let initialized_notif = json!({
             "jsonrpc": "2.0",
             "method": "initialized",
@@ -92,21 +94,7 @@ impl LspClient {
         });
         writer.send(initialized_notif)?;
 
-        let did_open_req = json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": file_uri,
-                    "languageId": language_id,
-                    "version": 1,
-                    "text": std::fs::read_to_string(filename).unwrap_or_default()
-                }
-            }
-        });
-        writer.send(did_open_req)?;
-
-        // --- STEP 4: Start continuous background diagnostic listener ---
+        // --- STEP 4: Start background diagnostic listener ---
         tokio::spawn(async move {
             loop {
                 match read_lsp_message(&mut reader).await {
@@ -132,7 +120,7 @@ impl LspClient {
                             }
                         }
                     }
-                    Err(_) => break, // Stream closed or malformed, exit task cleanly
+                    Err(_) => break, // Stream closed or malformed
                 }
             }
         });
@@ -140,6 +128,28 @@ impl LspClient {
         Ok(())
     }
 
+    /// Called when the user opens a specific file in the editor
+    pub fn open_file(&self, filename: &str, text: &str) -> Result<()> {
+        let did_open_req = json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": get_file_uri(filename),
+                    "languageId": get_language_id(filename),
+                    "version": 1,
+                    "text": text
+                }
+            }
+        });
+
+        if let Some(writer) = &self.writer {
+            writer.send(did_open_req)?;
+        }
+        Ok(())
+    }
+
+    /// Called when the user types/modifies the file
     pub fn notify_change(&self, filename: &str, version: u32, text: &str) -> Result<()> {
         let did_change_req = json!({
             "jsonrpc": "2.0",
@@ -169,12 +179,50 @@ impl Default for LspClient {
     }
 }
 
+// --- Directory Scanning Logic ---
+
+/// Scans the directory to find the most used language. 
+/// It skips build/dependency directories to stay fast.
+pub fn detect_workspace_language(dir: &str) -> Option<&'static str> {
+    let path = Path::new(dir);
+    let mut ext_counts: HashMap<&'static str, usize> = HashMap::new();
+
+    fn visit_dirs(dir: &Path, counts: &mut HashMap<&'static str, usize>) {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    let name = path.file_name().unwrap_or_default().to_string_lossy();
+                    // Skip hidden dirs and common heavy folders
+                    if name.starts_with('.') || name == "target" || name == "node_modules" || name == "build" {
+                        continue;
+                    }
+                    visit_dirs(&path, counts);
+                } else if path.is_file() {
+                    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                    let dummy_file = format!("f.{}", ext);
+                    let lang = get_language_id(&dummy_file);
+                    if lang != "plaintext" {
+                        *counts.entry(lang).or_insert(0) += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    visit_dirs(path, &mut ext_counts);
+
+    // Return the language with the highest count
+    ext_counts
+        .into_iter()
+        .max_by_key(|&(_, count)| count)
+        .map(|(lang, _)| lang)
+}
+
 // --- Helper Functions ---
 
-/// Reads the next JSON-RPC payload from the LSP stream by parsing the `Content-Length` header.
 async fn read_lsp_message<R: AsyncBufReadExt + Unpin>(reader: &mut R) -> Result<Vec<u8>> {
     let mut len = 0;
-    
     loop {
         let mut header_line = String::new();
         if reader.read_line(&mut header_line).await? == 0 {
@@ -183,7 +231,7 @@ async fn read_lsp_message<R: AsyncBufReadExt + Unpin>(reader: &mut R) -> Result<
         
         let header_line = header_line.trim();
         if header_line.is_empty() {
-            break; // Empty line signifies the end of headers
+            break;
         }
         
         if let Some(len_str) = header_line.strip_prefix("Content-Length:") {
@@ -201,14 +249,12 @@ async fn read_lsp_message<R: AsyncBufReadExt + Unpin>(reader: &mut R) -> Result<
     Ok(body)
 }
 
-/// Converts a local file path into an LSP-compatible file URI.
 fn get_file_uri(filename: &str) -> String {
     let file_path = std::fs::canonicalize(filename).unwrap_or_else(|_| PathBuf::from(filename));
     format!("file://{}", file_path.display())
 }
 
-/// Resolves the LSP language ID based on the file extension.
-fn get_language_id(filename: &str) -> &'static str {
+pub fn get_language_id(filename: &str) -> &'static str {
     match filename.split('.').last().unwrap_or("") {
         "rs" => "rust",
         "c" => "c",

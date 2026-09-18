@@ -1,6 +1,6 @@
 use anyhow::Result;
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
+    event::{self, Event, KeyCode, KeyEvent, KeyModifiers, MouseEventKind, EnableMouseCapture, DisableMouseCapture},
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
 };
@@ -8,7 +8,9 @@ use std::{io::stdout, time::Duration};
 
 pub enum InputEvent {
     Key(crossterm::event::KeyEvent),
-    Resize, // Changed from Resize(u16, u16)
+    Resize,
+    ScrollUp,
+    ScrollDown,
     Tick,
 }
 
@@ -18,14 +20,32 @@ impl TerminalGuard {
     pub fn init() -> Result<Self> {
         enable_raw_mode()?;
         stdout().execute(EnterAlternateScreen)?;
+        // Enable mouse events so we can detect scroll wheel input
+        stdout().execute(EnableMouseCapture)?;
         Ok(Self)
+    }
+
+    /// Call this right BEFORE spawning a foreground process (e.g., vim)
+    pub fn suspend() -> Result<()> {
+        stdout().execute(DisableMouseCapture)?;
+        stdout().execute(LeaveAlternateScreen)?;
+        disable_raw_mode()?;
+        Ok(())
+    }
+
+    /// Call this right AFTER the foreground process exits
+    pub fn resume() -> Result<()> {
+        enable_raw_mode()?;
+        stdout().execute(EnterAlternateScreen)?;
+        stdout().execute(EnableMouseCapture)?;
+        Ok(())
     }
 }
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
-        let _ = disable_raw_mode();
-        let _ = stdout().execute(LeaveAlternateScreen);
+        // Safe to ignore errors during cleanup drop
+        let _ = TerminalGuard::suspend();
     }
 }
 
@@ -34,6 +54,11 @@ pub fn poll_event(timeout: Duration) -> Result<InputEvent> {
         match event::read()? {
             Event::Key(key) => Ok(InputEvent::Key(key)),
             Event::Resize(_, _) => Ok(InputEvent::Resize),
+            Event::Mouse(mouse) => match mouse.kind {
+                MouseEventKind::ScrollUp => Ok(InputEvent::ScrollUp),
+                MouseEventKind::ScrollDown => Ok(InputEvent::ScrollDown),
+                _ => Ok(InputEvent::Tick),
+            },
             _ => Ok(InputEvent::Tick),
         }
     } else {

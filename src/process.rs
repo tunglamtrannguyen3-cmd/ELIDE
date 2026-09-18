@@ -1,14 +1,9 @@
-use crossterm::{
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
-    ExecutableCommand,
-};
-use std::io::stdout;
 use anyhow::Result;
 use nix::sys::resource::{getrusage, UsageWho};
 use std::process::Stdio;
+use tokio::io::AsyncBufReadExt; // Required for async read_line
 use tokio::process::Command;
 use crate::editor::Editor;
-
 
 #[derive(Debug, Clone)]
 pub struct ProcessResult {
@@ -105,8 +100,7 @@ pub async fn compile_file(editor: &Editor) -> Result<ProcessResult> {
 
 pub async fn run_interactive_cmd(cmd_str: &str) -> Result<()> {
     // 1. Temporarily surrender the terminal to the child app
-    let _ = disable_raw_mode();
-    let _ = stdout().execute(LeaveAlternateScreen);
+    let _ = crate::terminal::TerminalGuard::suspend();
 
     // 2. Spawn the process interactively (inheriting stdin/stdout/stderr)
     let mut child = Command::new("/bin/bash")
@@ -125,11 +119,11 @@ pub async fn run_interactive_cmd(cmd_str: &str) -> Result<()> {
     println!("\x1b[33mPress ENTER to return to ELIDE...\x1b[0m");
     
     let mut pause_buf = String::new();
-    let _ = std::io::stdin().read_line(&mut pause_buf);
+    let mut stdin = tokio::io::BufReader::new(tokio::io::stdin());
+    let _ = stdin.read_line(&mut pause_buf).await;
 
     // 5. Reclaim the terminal UI for ELIDE
-    let _ = enable_raw_mode();
-    let _ = stdout().execute(EnterAlternateScreen);
+    let _ = crate::terminal::TerminalGuard::resume();
 
     Ok(())
 }

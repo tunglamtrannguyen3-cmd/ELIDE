@@ -1,4 +1,3 @@
-
 mod editor;
 mod palette;
 mod terminal;
@@ -9,7 +8,6 @@ mod colors;
 mod tracer;
 mod lsp_writer;
 
-use std::path::PathBuf;
 use anyhow::Result;
 use crossterm::{
     cursor,
@@ -28,7 +26,6 @@ use std::{
 use tokio::sync::mpsc;
 use terminal::InputEvent;
 
-// Helper to colorize and print words as they are assembled
 fn flush_token(stdout: &mut Stdout, word: &mut String, next_char: Option<char>) -> std::io::Result<()> {
     if word.is_empty() { return Ok(()); }
     
@@ -59,7 +56,6 @@ fn flush_token(stdout: &mut Stdout, word: &mut String, next_char: Option<char>) 
     Ok(())
 }
 
-#[allow(dead_code)]
 struct AppState {
     editor: Editor,
     palette: Palette,
@@ -68,22 +64,14 @@ struct AppState {
     command_history: Vec<(String, bool)>,
     doc_version: u32,
     
-    // UI State
     show_lsp_pane: bool,
     lsp_scroll_offset: usize,
     term_scroll_y: usize,
     term_scroll_x: usize,
-    
-    // ADD THIS:
-    workspace_files: Vec<PathBuf>,
 }
 
-// 2. Update AppState::new()
 impl AppState {
     fn new() -> Self {
-        // Get the directory where ELIDE was launched
-        let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        
         Self {
             editor: Editor::new(),
             palette: Palette::new(),
@@ -95,9 +83,6 @@ impl AppState {
             lsp_scroll_offset: 0,
             term_scroll_y: 0,
             term_scroll_x: 0,
-            
-            // ADD THIS: Call the function to fix the warning
-            workspace_files: editor::collect_workspace_files(&current_dir),
         }
     }
 
@@ -110,10 +95,10 @@ impl AppState {
             if self.palette.is_active {
                 self.palette.is_active = false;
             } else {
-                return false; // Exit app
+                return false;
             }
         } else if terminal::is_alt_t(&key) {
-            self.palette.is_active = true;
+            self.palette.is_active = !self.palette.is_active;
         } else if terminal::is_alt_l(&key) {
             self.show_lsp_pane = !self.show_lsp_pane;
         } else if terminal::is_alt_up(&key) {
@@ -125,7 +110,7 @@ impl AppState {
         } else {
             self.handle_editor_input(key);
         }
-        true // Continue running
+        true
     }
 
     async fn handle_terminal_input(
@@ -151,14 +136,15 @@ impl AppState {
                 let (msg, success) = self.palette.execute_action(action, &mut self.editor).await;
                 
                 if let Some(cmd) = lsp_start_cmd {
-                    if let Some(ref filename) = self.editor.filename {
-                        if let Err(e) = self.lsp_client.start(&cmd, filename, diag_tx.clone()).await {
-                            self.command_history.push((format!("LSP Boot Error: {}", e), false));
-                        } else {
-                            self.show_lsp_pane = true;
-                        }
+                    let curr_dir = std::env::current_dir().unwrap_or_default().to_string_lossy().to_string();
+                    if let Err(e) = self.lsp_client.init_workspace(&cmd, &curr_dir, diag_tx.clone()).await {
+                        self.command_history.push((format!("LSP Boot Error: {}", e), false));
                     } else {
-                        self.command_history.push(("Error: You must open a file before starting an LSP.".to_string(), false));
+                        self.show_lsp_pane = true;
+                        if let Some(ref filename) = self.editor.filename {
+                            let text = self.editor.lines.join("\n");
+                            let _ = self.lsp_client.open_file(filename, &text);
+                        }
                     }
                 }
                 
@@ -196,8 +182,6 @@ impl AppState {
     }
 }
 
-// --- Layout & Rendering ---
-
 struct Layout {
     term_width: u16,
     term_height: u16,
@@ -226,7 +210,7 @@ impl Layout {
             .saturating_sub(banner_height);
             
         let debug_width = if state.show_lsp_pane {
-            ((term_width as usize) * 10) / 100
+            ((term_width as usize) * 20) / 100
         } else {
             0
         };
@@ -399,7 +383,7 @@ fn draw_status_bar(stdout: &mut Stdout, state: &AppState, layout: &Layout) -> Re
     stdout.execute(SetBackgroundColor(Color::White))?;
     
     let status = format!(
-        " Codespace: {} | Row: {} Col: {} | LSP: {:?} ",
+        " Codespace: {} | Row: {} Col: {} | LSP: {} ",
         state.editor.filename.as_deref().unwrap_or("[Untitled]"),
         state.editor.cursor.row + 1,
         state.editor.cursor.col + 1,
@@ -506,24 +490,87 @@ async fn main() -> Result<()> {
     let mut state = AppState::new();
     let (diag_tx, mut diag_rx) = mpsc::unbounded_channel::<Vec<diagnostics::Diagnostic>>();
 
+    // Handle CLI arguments (e.g., `elide main.rs`)
+    if let Some(target_file) = std::env::args().nth(1) {
+        if let Ok(content) = std::fs::read_to_string(&target_file) {
+            state.editor.lines = content.lines().map(String::from).collect();
+            if state.editor.lines.is_empty() {
+                state.editor.lines.push(String::new());
+            }
+            state.editor.filename = Some(target_file);
+        }
+    }
+
+    // Workspace Auto-LSP Initialization
+    let workspace_dir = std::env::current_dir().unwrap_or_default().to_string_lossy().to_string();
+    if let Some(detected_lang) = lsp::detect_workspace_language(&workspace_dir) {
+        let default_lsp = match detected_lang {
+            "rust" => Some("rust-analyzer"),
+            "python" => Some("pyright"),
+            "cpp" | "c" => Some("clangd"),
+            "typescript" | "javascript" => Some("typescript-language-server --stdio"),
+            _ => None,
+        };
+
+        if let Some(lsp_cmd) = default_lsp {
+            if state.lsp_client.init_workspace(lsp_cmd, &workspace_dir, diag_tx.clone()).await.is_ok() {
+                state.show_lsp_pane = true;
+                if let Some(ref fname) = state.editor.filename {
+                    let text = state.editor.lines.join("\n");
+                    let _ = state.lsp_client.open_file(fname, &text);
+                }
+            }
+        }
+    }
+
+    let mut needs_redraw = true;
+
     loop {
         while let Ok(diags) = diag_rx.try_recv() {
             state.current_diagnostics = diags;
+            needs_redraw = true;
         }
 
         let layout = Layout::compute(&state)?;
         state.editor.scroll_into_view(layout.edit_pane_w, layout.editor_height);
 
-        match terminal::poll_event(Duration::from_millis(50))? {
+        match terminal::poll_event(Duration::from_millis(16))? {
             InputEvent::Key(key) => {
+                needs_redraw = true;
                 if !state.handle_input(key, &diag_tx).await {
                     break;
                 }
             }
-            InputEvent::Resize | InputEvent::Tick => {}
+            InputEvent::ScrollUp => {
+                needs_redraw = true;
+                if state.palette.is_active {
+                    state.term_scroll_y = state.term_scroll_y.saturating_add(3);
+                } else if state.show_lsp_pane {
+                    state.lsp_scroll_offset = state.lsp_scroll_offset.saturating_sub(3);
+                } else {
+                    state.editor.move_cursor(-3, 0);
+                }
+            }
+            InputEvent::ScrollDown => {
+                needs_redraw = true;
+                if state.palette.is_active {
+                    state.term_scroll_y = state.term_scroll_y.saturating_sub(3);
+                } else if state.show_lsp_pane {
+                    state.lsp_scroll_offset = state.lsp_scroll_offset.saturating_add(3);
+                } else {
+                    state.editor.move_cursor(3, 0);
+                }
+            }
+            InputEvent::Resize => {
+                needs_redraw = true;
+            }
+            InputEvent::Tick => {}
         }
 
-        render_ui(&mut stdout, &mut state, &layout)?;
+        if needs_redraw {
+            render_ui(&mut stdout, &mut state, &layout)?;
+            needs_redraw = false;
+        }
     }
 
     Ok(())
