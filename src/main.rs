@@ -9,6 +9,7 @@ mod colors;
 mod tracer;
 mod lsp_writer;
 
+use std::path::PathBuf;
 use anyhow::Result;
 use crossterm::{
     cursor,
@@ -58,6 +59,7 @@ fn flush_token(stdout: &mut Stdout, word: &mut String, next_char: Option<char>) 
     Ok(())
 }
 
+#[allow(dead_code)]
 struct AppState {
     editor: Editor,
     palette: Palette,
@@ -71,10 +73,17 @@ struct AppState {
     lsp_scroll_offset: usize,
     term_scroll_y: usize,
     term_scroll_x: usize,
+    
+    // ADD THIS:
+    workspace_files: Vec<PathBuf>,
 }
 
+// 2. Update AppState::new()
 impl AppState {
     fn new() -> Self {
+        // Get the directory where ELIDE was launched
+        let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        
         Self {
             editor: Editor::new(),
             palette: Palette::new(),
@@ -86,6 +95,9 @@ impl AppState {
             lsp_scroll_offset: 0,
             term_scroll_y: 0,
             term_scroll_x: 0,
+            
+            // ADD THIS: Call the function to fix the warning
+            workspace_files: editor::collect_workspace_files(&current_dir),
         }
     }
 
@@ -487,8 +499,9 @@ fn sync_cursor(stdout: &mut Stdout, state: &AppState, layout: &Layout) -> Result
 #[tokio::main]
 async fn main() -> Result<()> {
     let _guard = terminal::TerminalGuard::init()?;
-    let _tracer = tracer::KernelTracer::init();
-    
+    let tracer = tracer::KernelTracer::init();
+    tracer.log_event("ELIDE Editor Initialized!");
+
     let mut stdout = stdout();
     let mut state = AppState::new();
     let (diag_tx, mut diag_rx) = mpsc::unbounded_channel::<Vec<diagnostics::Diagnostic>>();
