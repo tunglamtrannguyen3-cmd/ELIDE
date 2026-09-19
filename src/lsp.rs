@@ -2,7 +2,7 @@
 use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::{Child, Command};
@@ -69,22 +69,29 @@ impl LspClient {
         let root_uri = get_file_uri(workspace_dir);
 
         // --- STEP 1: Send the initialize request ---
-        let init_req = json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": {
-                "processId": std::process::id(),
-                "rootUri": root_uri,
-                "capabilities": {
-                    "textDocument": {
-                        "publishDiagnostics": {
-                            "relatedInformation": true
-                        }
-                    }
+        // ✅ FIXED
+let init_req = json!({
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": {
+        "processId": std::process::id(),
+        "rootUri": root_uri,
+        "capabilities": {
+            "textDocument": {
+                "synchronization": {
+                    "dynamicRegistration": false,
+                    "willSave": false,
+                    "willSaveWaitUntil": false,
+                    "didSave": false
+                },
+                "publishDiagnostics": {
+                    "relatedInformation": true
                 }
             }
-        });
+        }
+    }
+});
         writer.send(init_req)?;
 
         // --- STEP 2: Wait specifically for the initialization response ---
@@ -268,20 +275,43 @@ async fn read_lsp_message<R: AsyncBufReadExt + Unpin>(reader: &mut R) -> Result<
     Ok(body)
 }
 
+// ✅ FIXED
 fn get_file_uri(filename: &str) -> String {
-    let file_path = std::fs::canonicalize(filename).unwrap_or_else(|_| PathBuf::from(filename));
-    format!("file://{}", file_path.display())
+    let file_path = std::fs::canonicalize(filename)
+        .unwrap_or_else(|_| std::env::current_dir().unwrap_or_default().join(filename));
+    url::Url::from_file_path(file_path)
+        .map(|u| u.to_string())
+        .unwrap_or_else(|_| format!("file://{}", filename))
 }
 
+// ✅ FIXED
 pub fn get_language_id(filename: &str) -> &'static str {
-    match filename.split('.').last().unwrap_or("") {
+    let ext = filename.rsplit('.').next().unwrap_or("");
+    match ext {
         "rs" => "rust",
         "c" => "c",
         "cpp" | "cxx" | "cc" | "h" | "hpp" => "cpp",
         "py" => "python",
-        "adb" | "ads" | "ada" => "ada",
-        "js" => "javascript",
-        "ts" => "typescript",
+        "go" => "go",
+        "java" => "java",
+        "cs" => "csharp",
+        "js" | "jsx" => "javascript",
+        "ts" | "tsx" => "typescript",
+        "html" => "html",
+        "css" | "scss" | "less" => "css",
+        "json" => "json",
+        "toml" => "toml",
+        "yaml" | "yml" => "yaml",
+        "sh" | "bash" => "shellscript",
+        "md" => "markdown",
+        "zig" => "zig",
+        "lua" => "lua",
+        "php" => "php",
+        "rb" => "ruby",
+        "hs" => "haskell",
+        "dart" => "dart",
+        "swift" => "swift",
+        "kt" | "kts" => "kotlin",
         _ => "plaintext",
     }
 }
