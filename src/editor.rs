@@ -2,8 +2,6 @@ use anyhow::{Context, Result};
 use std::fs;
 use unicode_width::UnicodeWidthStr;
 
-
-
 #[derive(Default, Debug, Clone)]
 pub struct Cursor {
     pub row: usize,
@@ -15,7 +13,6 @@ pub struct Editor {
     pub lines: Vec<String>,
     pub cursor: Cursor,
     pub is_dirty: bool,
-    pub custom_build_cmd: Option<String>,
     pub row_offset: usize,
     pub col_offset: usize, // Measured in visual terminal columns
 }
@@ -27,7 +24,6 @@ impl Editor {
             lines: vec![String::new()],
             cursor: Cursor { row: 0, col: 0 },
             is_dirty: false,
-            custom_build_cmd: None,
             row_offset: 0,
             col_offset: 0,
         }
@@ -95,7 +91,6 @@ impl Editor {
         self.row_offset = 0;
         self.col_offset = 0;
         self.is_dirty = false;
-        self.custom_build_cmd = None;
         Ok(())
     }
 
@@ -220,4 +215,3 @@ impl Editor {
         }
     }
 }
-

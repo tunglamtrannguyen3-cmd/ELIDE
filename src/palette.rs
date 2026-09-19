@@ -4,7 +4,6 @@ use crate::process;
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum PaletteAction {
     Save,
-    Compile,
     Debug,
     Info,
     Help,
@@ -16,7 +15,6 @@ pub enum PaletteAction {
     New(String),
     Code(String),
     Switch(String),
-    SetBuild(String),
     SetLsp(String),
     Acel(String),
 }
@@ -50,7 +48,6 @@ impl Palette {
 
         match trimmed {
             "-s" | "--save" | "save" | ":w" => return PaletteAction::Save,
-            "-c" | "--compile" | "compile" | "build" | ":b" => return PaletteAction::Compile,
             "-d" | "--debug" | "debug" => return PaletteAction::Debug,
             "-i" | "--info" | "info" => return PaletteAction::Info,
             "-h" | "-?" | "--help" | "help" | "?" => return PaletteAction::Help,
@@ -64,18 +61,16 @@ impl Palette {
             PaletteAction::Code(Self::extract_arg(trimmed, "code "))
         } else if trimmed.starts_with("switch ") {
             PaletteAction::Switch(Self::extract_arg(trimmed, "switch "))
-        } else if trimmed.starts_with("set-build ") {
-            PaletteAction::SetBuild(Self::extract_arg(trimmed, "set-build "))
         } else if trimmed.starts_with("lsp ") {
             PaletteAction::SetLsp(Self::extract_arg(trimmed, "lsp "))
         } else if trimmed.starts_with("sh ") {
             let raw_bash = trimmed[3..].trim().to_string();
             PaletteAction::RunBash(raw_bash)
-        } else if trimmed.starts_with("acel ") { // <-- NEW
+        } else if trimmed.starts_with("acel ") {
             PaletteAction::Acel(Self::extract_arg(trimmed, "acel "))
         } else {
             PaletteAction::UnknownCommand(trimmed.to_string())
-        } 
+        }
     }
 
     pub async fn execute_action(
@@ -90,10 +85,6 @@ impl Palette {
                 Ok(msg) => (msg, true),
                 Err(e) => (format!("Save Error: {}", e), false),
             },
-            PaletteAction::Compile => match process::compile_file(editor).await {
-                Ok(res) => (res.output, res.success),
-                Err(e) => (format!("Build Failed: {}", e), false),
-            },
             PaletteAction::Debug => {
                 let target = editor.filename.as_deref().unwrap_or("main.rs");
                 let debug_cmd = format!("gdb --batch -ex r -ex bt --args ./{}", target);
@@ -104,12 +95,12 @@ impl Palette {
             }
             PaletteAction::Info => {
                 let info = format!(
-                   "███████╗██╗     ██╗██████╗ ███████╗
-                    ██╔════╝██║     ██║██╔══██╗██╔════╝
-                    █████╗  ██║     ██║██║  ██║█████╗  
-                    ██╔══╝  ██║     ██║██║  ██║██╔══╝  
-                    ███████╗███████╗██║██████╔╝███████╗
-                    ╚══════╝╚══════╝╚═╝╚═════╝ ╚══════╝
+                   "███████╗██╗     ██╗██████╗ ███████╗\n\
+                    ██╔════╝██║     ██║██╔══██╗██╔════╝\n\
+                    █████╗  ██║     ██║██║  ██║█████╗  \n\
+                    ██╔══╝  ██║     ██║██║  ██║██╔══╝  \n\
+                    ███████╗███████╗██║██████╔╝███████╗\n\
+                    ╚══════╝╚══════╝╚═╝╚═════╝ ╚══════╝\n\
                     ℹ️ [ABOUT AUTHOR]\n\
                      • Author        : Eggchese\n\
                      • Email         : (tunglamtrannguyen3@gmail.com)\n\
@@ -117,17 +108,15 @@ impl Palette {
                      • Skills        : Systems Programming, Rust, C, Ada, Micro-skills, Cooking, Chess, Touhou on Lunatic\n\
                      -----------------------------------\n\
                      ℹ️ [EDITOR INFO]\n\
-                     • Version       : v1.2.0\n\
+                     • Version       : v2.0.1\n\
                      • Target File   : {}\n\
                      • Total Lines   : {}\n\
                      • Cursor Pos    : Row {}, Col {}\n\
-                     • Custom Build  : {}\n\
                      • Target OS/Arch: {} / {}",
                     editor.filename.as_deref().unwrap_or("[Untitled]"),
                     editor.lines.len(),
                     editor.cursor.row + 1,
                     editor.cursor.col + 1,
-                    editor.custom_build_cmd.as_deref().unwrap_or("None (Auto-detect)"),
                     std::env::consts::OS,
                     std::env::consts::ARCH
                 );
@@ -135,9 +124,10 @@ impl Palette {
             }
             PaletteAction::Help => (
                 "📖 [ELIDE COMMAND PALETTE MANUAL]\n\
-                 • Flags: -c (Compile), -d (Debug), -s (Save), -i (Info), -bro! (Vent)\n\
+                 • Flags: -s (Save), -d (Debug), -i (Info), -bro! (Vent)\n\
                  • File Cmds: new <file>, code <file>, switch <file>\n\
-                 • Overrides: set-build <cmd>, lsp <cmd>, sh <cmd>"
+                 • Runner: acel <cmd> (Replaces legacy compile/set-build)\n\
+                 • Overrides: lsp <cmd>, sh <cmd>"
                     .to_string(),
                 true,
             ),
@@ -185,7 +175,6 @@ impl Palette {
                     editor.lines = vec![String::new()];
                     editor.cursor = Cursor { row: 0, col: 0 };
                     editor.is_dirty = true;
-                    editor.custom_build_cmd = None;
                     (format!("Created new buffer: {}", filename), true)
                 }
             }
@@ -209,15 +198,6 @@ impl Palette {
                     }
                 }
             }
-            PaletteAction::SetBuild(cmd) => {
-                if cmd.is_empty() {
-                    editor.custom_build_cmd = None;
-                    ("Cleared custom build command.".to_string(), true)
-                } else {
-                    editor.custom_build_cmd = Some(cmd.clone());
-                    (format!("Custom build command set to: '{}'", cmd), true)
-                }
-            }
             PaletteAction::SetLsp(cmd) => {
                 if cmd.is_empty() {
                     ("Error: Specify an LSP command (e.g., lsp rust-analyzer).".to_string(), false)
@@ -225,24 +205,20 @@ impl Palette {
                     (format!("Starting LSP: {}", cmd), true)
                 }
             }
+            PaletteAction::Acel(cmd) => {
+                if cmd.is_empty() {
+                    ("Error: Specify a command to run (e.g., acel build).".to_string(), false)
+                } else {
+                    match process::run_interactive_cmd(&cmd).await {
+                        Ok(_) => (format!("Returned from acel: {}", cmd), true),
+                        Err(e) => (format!("Failed to launch acel app: {}", e), false),
+                    }
+                }
+            }
             PaletteAction::UnknownCommand(cmd) => {
                 (format!("Unknown command: {}", cmd), false)
             }
             PaletteAction::Empty => ("No command entered.".to_string(), true),
-             // (Make sure there is NO closing brace `}` for the match block right here!)
-            
-            PaletteAction::Acel(cmd) => {
-                if cmd.is_empty() {
-                    ("Error: Specify an app to run (e.g., acel moon-buggy).".to_string(), false)
-                } else {
-                    match process::run_interactive_cmd(&cmd).await {
-                        Ok(_) => (format!("Returned from: {}", cmd), true),
-                        Err(e) => (format!("Failed to launch app: {}", e), false),
-                    }
-                }
-            }
-
-            
-        } // <-- THIS is where the match action block closes
-    } // <-- THIS is where the execute_action function closes
-} // <-- THIS is where the impl Palette block closes
+        }
+    }
+}

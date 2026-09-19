@@ -249,7 +249,7 @@ fn render_ui(stdout: &mut Stdout, state: &mut AppState, layout: &Layout) -> Resu
 fn draw_banner(stdout: &mut Stdout) -> Result<()> {
     let banner = [
         "┌──────────────────────────────────────────────┐",
-        "│  E L I D E  ::  Easier Life @ IDE  :: v2.0.0 │",
+        "│  E L I D E  ::  Easier Life @ IDE  :: v2.0.1 │",
         "└──────────────────────────────────────────────┘",
     ];
     for (i, line) in banner.iter().enumerate() {
@@ -505,10 +505,51 @@ async fn main() -> Result<()> {
     let workspace_dir = std::env::current_dir().unwrap_or_default().to_string_lossy().to_string();
     if let Some(detected_lang) = lsp::detect_workspace_language(&workspace_dir) {
         let default_lsp = match detected_lang {
+            // Systems & Compiled
             "rust" => Some("rust-analyzer"),
-            "python" => Some("pyright"),
             "cpp" | "c" => Some("clangd"),
+            "go" => Some("gopls"),
+            "zig" => Some("zls"),
+            "ada" => Some("ada_language_server"),
+            "swift" => Some("sourcekit-lsp"),
+            "nim" => Some("nimlsp"),
+            
+            // JVM & .NET
+            "java" => Some("jdtls"),
+            "csharp" | "cs" => Some("csharp-ls"), 
+            "kotlin" => Some("kotlin-language-server"),
+            "scala" => Some("metals"),
+
+            // Web & Scripting
+            "python" => Some("pyright"),
             "typescript" | "javascript" => Some("typescript-language-server --stdio"),
+            "html" => Some("vscode-html-language-server --stdio"),
+            "css" | "scss" | "less" => Some("vscode-css-language-server --stdio"),
+            "php" => Some("intelephense --stdio"),
+            "ruby" => Some("solargraph stdio"),
+            "lua" => Some("lua-language-server"),
+            "bash" | "sh" | "shell" => Some("bash-language-server start"),
+            "dart" => Some("dart language-server"),
+            
+            // Frameworks
+            "svelte" => Some("svelteserver --stdio"),
+            "vue" => Some("vls"),
+
+            // Functional
+            "haskell" => Some("haskell-language-server-wrapper --lsp"),
+            "ocaml" => Some("ocamllsp"),
+            "elixir" => Some("elixir-ls"),
+            "erlang" => Some("erlang_ls"),
+
+            // Data, Config & Docs
+            "json" => Some("vscode-json-language-server --stdio"),
+            "yaml" | "yml" => Some("yaml-language-server --stdio"),
+            "toml" => Some("taplo lsp stdio"),
+            "markdown" | "md" => Some("marksman"),
+            "latex" | "tex" => Some("texlab"),
+            "dockerfile" | "docker" => Some("docker-langserver --stdio"),
+            "sql" => Some("sqls"),
+            
             _ => None,
         };
 
