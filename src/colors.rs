@@ -11,13 +11,13 @@ impl Palette {
     pub const NAVY_GRAY: Color = Color::Rgb { r: 112, g: 128, b: 144 };
 
     // --- Relaxing Syntax Highlighting Colors ---
-    pub const TEXT_DEFAULT: Color = Color::Rgb { r: 205, g: 214, b: 244 }; // Gentle off-white
-    pub const KEYWORD_PURPLE: Color = Color::Rgb { r: 203, g: 166, b: 247 }; // Soft lavender (`fn`, `let`, `pub`)
-    pub const STRING_GREEN: Color = Color::Rgb { r: 166, g: 227, b: 161 };  // Pastel mint (`"hello"`)
-    pub const COMMENT_GRAY: Color = Color::Rgb { r: 147, g: 153, b: 178 };  // Muted slate gray (`// ...`)
-    pub const FUNCTION_BLUE: Color = Color::Rgb { r: 137, g: 180, b: 250 }; // Calm sky blue (`main()`)
-    pub const TYPE_YELLOW: Color = Color::Rgb { r: 249, g: 226, b: 175 };    // Warm cream (`String`, `usize`)
-    pub const NUMBER_ORANGE: Color = Color::Rgb { r: 250, g: 179, b: 135 };  // Soft peach (`42`, `0xFF`)
+    pub const TEXT_DEFAULT: Color = Color::Rgb { r: 200, g: 204, b: 214 }; // Soft neutral gray
+    pub const KEYWORD_PURPLE: Color = Color::Rgb { r: 184, g: 176, b: 210 }; // Dusty lavender
+    pub const STRING_GREEN: Color = Color::Rgb { r: 164, g: 190, b: 166 }; // Muted sage
+    pub const COMMENT_GRAY: Color = Color::Rgb { r: 125, g: 130, b: 145 }; // Quiet slate
+    pub const FUNCTION_BLUE: Color = Color::Rgb { r: 157, g: 180, b: 202 }; // Desaturated blue-gray
+    pub const TYPE_YELLOW: Color = Color::Rgb { r: 205, g: 195, b: 158 }; // Muted warm sand
+    pub const NUMBER_ORANGE: Color = Color::Rgb { r: 205, g: 166, b: 143 }; // Dusty peach
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

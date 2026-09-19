@@ -1,3 +1,4 @@
+// src/palette.rs
 use crate::editor::{Cursor, Editor};
 use crate::process;
 
@@ -104,11 +105,11 @@ impl Palette {
                     ℹ️ [ABOUT AUTHOR]\n\
                      • Author        : Eggchese\n\
                      • Email         : (tunglamtrannguyen3@gmail.com)\n\
-                     • Favorite Idol : Yatsuzume\n\
+                     • Favorite Idol : Yatsuzume, All Minecraft Manhunt Speedruners\n\
                      • Skills        : Systems Programming, Rust, C, Ada, Micro-skills, Cooking, Chess, Touhou on Lunatic\n\
                      -----------------------------------\n\
                      ℹ️ [EDITOR INFO]\n\
-                     • Version       : v2.0.1\n\
+                     • Version       : v2.0.2\n\
                      • Target File   : {}\n\
                      • Total Lines   : {}\n\
                      • Cursor Pos    : Row {}, Col {}\n\

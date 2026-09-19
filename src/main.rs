@@ -1,3 +1,4 @@
+// src/main.rs
 mod editor;
 mod palette;
 mod terminal;
@@ -249,7 +250,7 @@ fn render_ui(stdout: &mut Stdout, state: &mut AppState, layout: &Layout) -> Resu
 fn draw_banner(stdout: &mut Stdout) -> Result<()> {
     let banner = [
         "┌──────────────────────────────────────────────┐",
-        "│  E L I D E  ::  Easier Life @ IDE  :: v2.0.1 │",
+        "│  E L I D E  ::  Easier Life @ IDE  :: v2.0.2 │",
         "└──────────────────────────────────────────────┘",
     ];
     for (i, line) in banner.iter().enumerate() {
@@ -337,30 +338,44 @@ fn draw_lsp_pane(stdout: &mut Stdout, state: &mut AppState, layout: &Layout) -> 
     
     for i in 0..total_top_height {
         stdout.execute(cursor::MoveTo(debug_x, i as u16))?;
-        stdout.execute(SetForegroundColor(Color::DarkGrey))?;
+        stdout.execute(SetForegroundColor(colors::Palette::NAVY_GRAY))?;
         write!(stdout, "│")?;
         stdout.execute(ResetColor)?;
     }
 
     stdout.execute(cursor::MoveTo(debug_x + 2, 0))?;
-    stdout.execute(SetForegroundColor(Color::Cyan))?;
+    stdout.execute(SetForegroundColor(colors::Palette::HINT_ICE_BLUE))?;
     write!(stdout, "LSP")?;
     stdout.execute(ResetColor)?;
 
     if state.current_diagnostics.is_empty() {
         stdout.execute(cursor::MoveTo(debug_x + 2, 2))?;
+        stdout.execute(SetForegroundColor(colors::Palette::SUCCESS_LIME))?;
         write!(stdout, "Nominal")?;
+        stdout.execute(ResetColor)?;
     } else {
         let mut wrapped_lines = Vec::new();
         let text_width = layout.debug_width.saturating_sub(3);
         
         if text_width > 0 {
             for diag in &state.current_diagnostics {
+                // Infer severity from the message text to map to our Palette
+                let msg_lower = diag.message.to_lowercase();
+                let status = if msg_lower.contains("error") {
+                    colors::Status::Error
+                } else if msg_lower.contains("warn") {
+                    colors::Status::Warning
+                } else if msg_lower.contains("hint") || msg_lower.contains("info") {
+                    colors::Status::Hint
+                } else {
+                    colors::Status::Error // Default for compiler complaints
+                };
+
                 let full_msg = format!("L{}: {}", diag.line, diag.message);
                 for chunk in full_msg.chars().collect::<Vec<_>>().chunks(text_width) {
-                    wrapped_lines.push(chunk.iter().collect::<String>());
+                    wrapped_lines.push((chunk.iter().collect::<String>(), status));
                 }
-                wrapped_lines.push(String::new());
+                wrapped_lines.push((String::new(), status));
             }
         }
 
@@ -368,9 +383,15 @@ fn draw_lsp_pane(stdout: &mut Stdout, state: &mut AppState, layout: &Layout) -> 
         let max_scroll = wrapped_lines.len().saturating_sub(max_display_lines);
         state.lsp_scroll_offset = state.lsp_scroll_offset.min(max_scroll);
 
-        for (idx, line) in wrapped_lines.iter().skip(state.lsp_scroll_offset).take(max_display_lines).enumerate() {
+        for (idx, (line, status)) in wrapped_lines.iter().skip(state.lsp_scroll_offset).take(max_display_lines).enumerate() {
             stdout.execute(cursor::MoveTo(debug_x + 2, 2 + idx as u16))?;
-            write!(stdout, "{}", line)?;
+            if !line.is_empty() {
+                stdout.execute(SetAttribute(colors::attribute_for_status(*status)))?;
+                stdout.execute(SetForegroundColor(colors::color_for_status(*status)))?;
+                write!(stdout, "{}", line)?;
+                stdout.execute(SetAttribute(Attribute::Reset))?;
+                stdout.execute(ResetColor)?;
+            }
         }
     }
     Ok(())
@@ -554,11 +575,17 @@ async fn main() -> Result<()> {
         };
 
         if let Some(lsp_cmd) = default_lsp {
-            if state.lsp_client.init_workspace(lsp_cmd, &workspace_dir, diag_tx.clone()).await.is_ok() {
-                state.show_lsp_pane = true;
-                if let Some(ref fname) = state.editor.filename {
-                    let text = state.editor.lines.join("\n");
-                    let _ = state.lsp_client.open_file(fname, &text);
+            match state.lsp_client.init_workspace(lsp_cmd, &workspace_dir, diag_tx.clone()).await {
+                Ok(_) => {
+                    state.show_lsp_pane = true;
+                    if let Some(ref fname) = state.editor.filename {
+                        let text = state.editor.lines.join("\n");
+                        let _ = state.lsp_client.open_file(fname, &text);
+                    }
+                }
+                Err(e) => {
+                    // Log it so you actually know when a server is missing
+                    tracer.log_event(&format!("Auto-LSP Boot Failed: {}", e));
                 }
             }
         }

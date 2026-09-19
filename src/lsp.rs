@@ -1,3 +1,4 @@
+// src/lsp.rs
 use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -9,8 +10,6 @@ use tokio::sync::mpsc;
 
 use crate::diagnostics::Diagnostic;
 use crate::lsp_writer::LspWriter;
-// Assuming process.rs has a function to get the LSP command string from a language ID
-// use crate::process::get_lsp_cmd_for_language; 
 
 pub struct LspClient {
     pub server_name: String,
@@ -34,19 +33,25 @@ impl LspClient {
         workspace_dir: &str,
         diag_tx: mpsc::UnboundedSender<Vec<Diagnostic>>,
     ) -> Result<()> {
-        // 1. Kill old process
+        // 1. Kill old process if one exists
         if let Some(mut old_child) = self._child.take() {
             let _ = old_child.kill().await;
         }
 
-        // 2. Spawn LSP process
-        let mut child = Command::new(lsp_cmd)
+        // 2. Safely split the command string into executable and arguments
+        let mut parts = lsp_cmd.split_whitespace();
+        let program = parts.next().ok_or_else(|| anyhow!("Empty LSP command provided"))?;
+        let args: Vec<&str> = parts.collect();
+
+        // 3. Spawn LSP process
+        let mut child = Command::new(program)
+            .args(&args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
             .map_err(|e| {
-                self.server_name = format!("Failed to launch {}", lsp_cmd);
+                self.server_name = format!("Failed to launch {}", program);
                 anyhow!("Failed to spawn LSP process '{}': {}", lsp_cmd, e)
             })?;
 
@@ -57,7 +62,7 @@ impl LspClient {
 
         self._child = Some(child);
 
-        // 3. Spawn background writer
+        // 4. Spawn background writer
         let writer = LspWriter::spawn(stdin);
         self.writer = Some(writer.clone());
 
@@ -82,9 +87,18 @@ impl LspClient {
         });
         writer.send(init_req)?;
 
-        // --- STEP 2: Wait for LSP reply ---
+        // --- STEP 2: Wait specifically for the initialization response ---
         let mut reader = BufReader::new(stdout);
-        let _initialize_result = read_lsp_message(&mut reader).await?;
+        loop {
+            let msg = read_lsp_message(&mut reader).await?;
+            if let Ok(json) = serde_json::from_slice::<Value>(&msg) {
+                // Ensure we are matching the response to our request (id: 1)
+                // This prevents crashing if the server sends telemetry/logs first.
+                if json.get("id").and_then(|id| id.as_u64()) == Some(1) {
+                    break;
+                }
+            }
+        }
 
         // --- STEP 3: Send initialized notification ---
         let initialized_notif = json!({
