@@ -126,7 +126,12 @@ impl LspClient {
                                             .unwrap_or("Unknown error")
                                             .to_string();
                                             
-                                        Diagnostic { line, message }
+                                        // Extract the severity level as a u8 to match the struct
+                                        let severity = d.get("severity")
+                                            .and_then(|s| s.as_u64())
+                                            .map(|n| n as u8);
+                                            
+                                        Diagnostic { line, message, severity }
                                     }).collect();
 
                                     let _ = diag_tx.send(parsed_diags);

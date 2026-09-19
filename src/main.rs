@@ -13,7 +13,7 @@ use anyhow::Result;
 use crossterm::{
     cursor,
     event::KeyCode,
-    style::{Attribute, Color, ResetColor, SetAttribute, SetBackgroundColor, SetForegroundColor},
+    style::{Attribute, ResetColor, SetAttribute, SetBackgroundColor, SetForegroundColor},
     terminal::{Clear, ClearType},
     ExecutableCommand,
 };
@@ -255,7 +255,7 @@ fn draw_banner(stdout: &mut Stdout) -> Result<()> {
     ];
     for (i, line) in banner.iter().enumerate() {
         stdout.execute(cursor::MoveTo(0, i as u16))?;
-        stdout.execute(SetForegroundColor(Color::Cyan))?; 
+        stdout.execute(SetForegroundColor(colors::Palette::FUNCTION_BLUE))?; 
         write!(stdout, "{}", line)?;
         stdout.execute(ResetColor)?;
     }
@@ -276,7 +276,7 @@ fn draw_editor(stdout: &mut Stdout, state: &AppState, layout: &Layout) -> Result
                 .take(layout.edit_pane_w)
                 .collect();
             
-            stdout.execute(SetForegroundColor(Color::DarkGrey))?;
+            stdout.execute(SetForegroundColor(colors::Palette::COMMENT_GRAY))?;
             write!(stdout, "{:3} | ", row + 1)?;
 
             let mut in_string = false;
@@ -322,7 +322,7 @@ fn draw_editor(stdout: &mut Stdout, state: &AppState, layout: &Layout) -> Result
             }
             stdout.execute(ResetColor)?;
         } else {
-            stdout.execute(SetForegroundColor(Color::DarkGrey))?;
+            stdout.execute(SetForegroundColor(colors::Palette::COMMENT_GRAY))?;
             write!(stdout, "{}", "~".repeat(layout.codespace_width.min(4)))?;
             stdout.execute(ResetColor)?;
         }
@@ -359,16 +359,23 @@ fn draw_lsp_pane(stdout: &mut Stdout, state: &mut AppState, layout: &Layout) -> 
         
         if text_width > 0 {
             for diag in &state.current_diagnostics {
-                // Infer severity from the message text to map to our Palette
-                let msg_lower = diag.message.to_lowercase();
-                let status = if msg_lower.contains("error") {
-                    colors::Status::Error
-                } else if msg_lower.contains("warn") {
-                    colors::Status::Warning
-                } else if msg_lower.contains("hint") || msg_lower.contains("info") {
-                    colors::Status::Hint
-                } else {
-                    colors::Status::Error // Default for compiler complaints
+                // Map the official LSP severity code to your Palette, with a fallback
+                let status = match diag.severity {
+                    Some(1) => colors::Status::Error,
+                    Some(2) => colors::Status::Warning,
+                    Some(3) | Some(4) => colors::Status::Hint,
+                    _ => {
+                        let msg_lower = diag.message.to_lowercase();
+                        if msg_lower.contains("error") {
+                            colors::Status::Error
+                        } else if msg_lower.contains("warn") {
+                            colors::Status::Warning
+                        } else if msg_lower.contains("hint") || msg_lower.contains("info") {
+                            colors::Status::Hint
+                        } else {
+                            colors::Status::Error
+                        }
+                    }
                 };
 
                 let full_msg = format!("L{}: {}", diag.line, diag.message);
@@ -400,8 +407,10 @@ fn draw_lsp_pane(stdout: &mut Stdout, state: &mut AppState, layout: &Layout) -> 
 fn draw_status_bar(stdout: &mut Stdout, state: &AppState, layout: &Layout) -> Result<()> {
     let status_row = (layout.banner_height + layout.editor_height) as u16;
     stdout.execute(cursor::MoveTo(0, status_row))?;
-    stdout.execute(SetForegroundColor(Color::Black))?;
-    stdout.execute(SetBackgroundColor(Color::White))?;
+    
+    // Using soft gray text on a muted navy background instead of harsh black/white
+    stdout.execute(SetForegroundColor(colors::Palette::TEXT_DEFAULT))?;
+    stdout.execute(SetBackgroundColor(colors::Palette::NAVY_GRAY))?;
     
     let status = format!(
         " Codespace: {} | Row: {} Col: {} | LSP: {} ",
@@ -475,11 +484,11 @@ fn draw_terminal_pane(stdout: &mut Stdout, state: &AppState, layout: &Layout) ->
 fn draw_command_palette(stdout: &mut Stdout, state: &AppState, layout: &Layout) -> Result<()> {
     stdout.execute(cursor::MoveTo(0, layout.term_height - 1))?;
     if state.palette.is_active {
-        stdout.execute(SetForegroundColor(Color::Yellow))?;
+        stdout.execute(SetForegroundColor(colors::Palette::TYPE_YELLOW))?;
         write!(stdout, ": {}", state.palette.input_buffer)?;
         stdout.execute(ResetColor)?;
     } else {
-        stdout.execute(SetForegroundColor(Color::DarkGrey))?;
+        stdout.execute(SetForegroundColor(colors::Palette::COMMENT_GRAY))?;
         write!(stdout, ": (press Alt+T for terminal, Esc to close)")?;
         stdout.execute(ResetColor)?;
     }
