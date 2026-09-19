@@ -48,7 +48,7 @@ commands.
   `switch <file>`                                   Switch/open another file
   `lsp <cmd>`                                       Configure an LSP command
   `sh <cmd>`                                        Execute a shell command
-  `acel <cmd>                                       Run foreground task
+  `acel <cmd>`                                       Run foreground task
 
 ELIDE also understands Vim-style commands such as:
 
