@@ -39,7 +39,6 @@ commands.
   Command                                           What it does
   ------------------------------------------------- ----------------------------
   `-s` / `--save` / `save` / `:w`                   Save the current file
-  `-c` / `--compile` / `compile` / `build` / `:b`   Compile/build
   `-d` / `--debug` / `debug`                        Debug with GDB
   `-i` / `--info` / `info`                          Show editor information
   `-h` / `-?` / `--help` / `help` / `?`             Show help
@@ -47,9 +46,9 @@ commands.
   `new <file>`                                      Create a new buffer
   `code <file>`                                     Open a file
   `switch <file>`                                   Switch/open another file
-  `set-build <cmd>`                                 Set a custom build command
   `lsp <cmd>`                                       Configure an LSP command
   `sh <cmd>`                                        Execute a shell command
+  `acel <cmd>                                       Run foreground task
 
 ELIDE also understands Vim-style commands such as:
 
