@@ -109,7 +109,7 @@ impl Palette {
                      • Skills        : Systems Programming, Rust, C, Ada, Micro-skills, Cooking, Chess, Touhou on Lunatic\n\
                      -----------------------------------\n\
                      ℹ️ [EDITOR INFO]\n\
-                     • Version       : v2.0.2\n\
+                     • Version       : v2.0.3\n\
                      • Target File   : {}\n\
                      • Total Lines   : {}\n\
                      • Cursor Pos    : Row {}, Col {}\n\

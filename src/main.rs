@@ -21,7 +21,9 @@ use editor::Editor;
 use lsp::LspClient;
 use palette::{Palette, PaletteAction};
 use std::{
+    collections::HashMap,
     io::{stdout, Stdout, Write},
+    path::Path,
     time::Duration,
 };
 use tokio::sync::mpsc;
@@ -61,7 +63,7 @@ struct AppState {
     editor: Editor,
     palette: Palette,
     lsp_client: LspClient,
-    current_diagnostics: Vec<diagnostics::Diagnostic>,
+    current_diagnostics: HashMap<String, Vec<diagnostics::Diagnostic>>,
     command_history: Vec<(String, bool)>,
     doc_version: u32,
     
@@ -77,7 +79,7 @@ impl AppState {
             editor: Editor::new(),
             palette: Palette::new(),
             lsp_client: LspClient::new(),
-            current_diagnostics: Vec::new(),
+            current_diagnostics: HashMap::new(),
             command_history: Vec::new(),
             doc_version: 1,
             show_lsp_pane: false,
@@ -90,7 +92,7 @@ impl AppState {
     async fn handle_input(
         &mut self, 
         key: crossterm::event::KeyEvent, 
-        diag_tx: &mpsc::UnboundedSender<Vec<diagnostics::Diagnostic>>
+        diag_tx: &mpsc::UnboundedSender<(String, Vec<diagnostics::Diagnostic>)>
     ) -> bool {
         if terminal::is_esc(&key) {
             if self.palette.is_active {
@@ -117,7 +119,7 @@ impl AppState {
     async fn handle_terminal_input(
         &mut self, 
         key: crossterm::event::KeyEvent,
-        diag_tx: &mpsc::UnboundedSender<Vec<diagnostics::Diagnostic>>
+        diag_tx: &mpsc::UnboundedSender<(String, Vec<diagnostics::Diagnostic>)>
     ) {
         match key.code {
             KeyCode::Up => self.term_scroll_y = self.term_scroll_y.saturating_add(1),
@@ -138,7 +140,14 @@ impl AppState {
                 
                 if let Some(cmd) = lsp_start_cmd {
                     let curr_dir = std::env::current_dir().unwrap_or_default().to_string_lossy().to_string();
-                    if let Err(e) = self.lsp_client.init_workspace(&cmd, &curr_dir, diag_tx.clone()).await {
+                    
+                    let target_lang = if let Some(ref fname) = self.editor.filename {
+                        lsp::get_language_id(fname)
+                    } else {
+                        lsp::detect_workspace_language(&curr_dir).unwrap_or("plaintext")
+                    };
+
+                    if let Err(e) = self.lsp_client.init_workspace(&cmd, target_lang, &curr_dir, diag_tx.clone()).await {
                         self.command_history.push((format!("LSP Boot Error: {}", e), false));
                     } else {
                         self.show_lsp_pane = true;
@@ -250,7 +259,7 @@ fn render_ui(stdout: &mut Stdout, state: &mut AppState, layout: &Layout) -> Resu
 fn draw_banner(stdout: &mut Stdout) -> Result<()> {
     let banner = [
         "┌──────────────────────────────────────────────┐",
-        "│  E L I D E  ::  Easier Life @ IDE  :: v2.0.2 │",
+        "│  E L I D E  ::  Easier Life @ IDE  :: v2.0.3 │",
         "└──────────────────────────────────────────────┘",
     ];
     for (i, line) in banner.iter().enumerate() {
@@ -345,7 +354,7 @@ fn draw_lsp_pane(stdout: &mut Stdout, state: &mut AppState, layout: &Layout) -> 
 
     stdout.execute(cursor::MoveTo(debug_x + 2, 0))?;
     stdout.execute(SetForegroundColor(colors::Palette::HINT_ICE_BLUE))?;
-    write!(stdout, "LSP")?;
+    write!(stdout, "LSP Workspace")?;
     stdout.execute(ResetColor)?;
 
     if state.current_diagnostics.is_empty() {
@@ -358,31 +367,38 @@ fn draw_lsp_pane(stdout: &mut Stdout, state: &mut AppState, layout: &Layout) -> 
         let text_width = layout.debug_width.saturating_sub(3);
         
         if text_width > 0 {
-            for diag in &state.current_diagnostics {
-                // Map the official LSP severity code to your Palette, with a fallback
-                let status = match diag.severity {
-                    Some(1) => colors::Status::Error,
-                    Some(2) => colors::Status::Warning,
-                    Some(3) | Some(4) => colors::Status::Hint,
-                    _ => {
-                        let msg_lower = diag.message.to_lowercase();
-                        if msg_lower.contains("error") {
-                            colors::Status::Error
-                        } else if msg_lower.contains("warn") {
-                            colors::Status::Warning
-                        } else if msg_lower.contains("hint") || msg_lower.contains("info") {
-                            colors::Status::Hint
-                        } else {
-                            colors::Status::Error
-                        }
-                    }
-                };
+            let mut sorted_uris: Vec<_> = state.current_diagnostics.keys().collect();
+            sorted_uris.sort();
 
-                let full_msg = format!("L{}: {}", diag.line, diag.message);
-                for chunk in full_msg.chars().collect::<Vec<_>>().chunks(text_width) {
-                    wrapped_lines.push((chunk.iter().collect::<String>(), status));
+            for uri in sorted_uris {
+                let diags = &state.current_diagnostics[uri];
+                let filename = uri.rsplit('/').next().unwrap_or("?");
+
+                for diag in diags {
+                    let status = match diag.severity {
+                        Some(1) => colors::Status::Error,
+                        Some(2) => colors::Status::Warning,
+                        Some(3) | Some(4) => colors::Status::Hint,
+                        _ => {
+                            let msg_lower = diag.message.to_lowercase();
+                            if msg_lower.contains("error") {
+                                colors::Status::Error
+                            } else if msg_lower.contains("warn") {
+                                colors::Status::Warning
+                            } else if msg_lower.contains("hint") || msg_lower.contains("info") {
+                                colors::Status::Hint
+                            } else {
+                                colors::Status::Error
+                            }
+                        }
+                    };
+
+                    let full_msg = format!("{}:L{}: {}", filename, diag.line, diag.message);
+                    for chunk in full_msg.chars().collect::<Vec<_>>().chunks(text_width) {
+                        wrapped_lines.push((chunk.iter().collect::<String>(), status));
+                    }
+                    wrapped_lines.push((String::new(), status));
                 }
-                wrapped_lines.push((String::new(), status));
             }
         }
 
@@ -408,16 +424,16 @@ fn draw_status_bar(stdout: &mut Stdout, state: &AppState, layout: &Layout) -> Re
     let status_row = (layout.banner_height + layout.editor_height) as u16;
     stdout.execute(cursor::MoveTo(0, status_row))?;
     
-    // Using soft gray text on a muted navy background instead of harsh black/white
     stdout.execute(SetForegroundColor(colors::Palette::TEXT_DEFAULT))?;
     stdout.execute(SetBackgroundColor(colors::Palette::NAVY_GRAY))?;
     
     let status = format!(
-        " Codespace: {} | Row: {} Col: {} | LSP: {} ",
-        state.editor.filename.as_deref().unwrap_or("[Untitled]"),
+        " Codespace: {} | Row: {} Col: {} | LSP: {} ({}) ",
+        state.editor.filename.as_deref().unwrap_or("[Workspace]"),
         state.editor.cursor.row + 1,
         state.editor.cursor.col + 1,
-        state.lsp_client.server_name.as_str()
+        state.lsp_client.server_name.as_str(),
+        state.lsp_client.language_id.as_str(),
     );
     
     write!(stdout, "{:width$}", status, width = layout.term_width as usize)?;
@@ -518,24 +534,62 @@ async fn main() -> Result<()> {
 
     let mut stdout = stdout();
     let mut state = AppState::new();
-    let (diag_tx, mut diag_rx) = mpsc::unbounded_channel::<Vec<diagnostics::Diagnostic>>();
+    let (diag_tx, mut diag_rx) = mpsc::unbounded_channel::<(String, Vec<diagnostics::Diagnostic>)>();
 
-    // Handle CLI arguments (e.g., `elide main.rs`)
-    if let Some(target_file) = std::env::args().nth(1) {
-        if let Ok(content) = std::fs::read_to_string(&target_file) {
-            state.editor.lines = content.lines().map(String::from).collect();
-            if state.editor.lines.is_empty() {
-                state.editor.lines.push(String::new());
+    // 1. Distinguish between directory launch (e.g. `elide .`) and single file launch
+    if let Some(arg) = std::env::args().nth(1) {
+        let path = Path::new(&arg);
+        
+        if path.is_dir() {
+            // Update the underlying process working directory
+            let canonical_dir = std::fs::canonicalize(path)
+                .unwrap_or_else(|_| path.to_path_buf());
+            let _ = std::env::set_current_dir(&canonical_dir);
+
+            // 2. Force listing the directory contents into the main editor view
+            if let Ok(entries) = std::fs::read_dir(&canonical_dir) {
+                let mut lines = vec![
+                    format!(" Workspace: {}", canonical_dir.display()),
+                    " ──────────────────────────────────────────".to_string(),
+                ];
+
+                let mut sorted_entries: Vec<String> = entries
+                    .flatten()
+                    .filter_map(|e| {
+                        let name = e.file_name().to_string_lossy().to_string();
+                        // Clean up the view by hiding common build/hidden directories
+                        if name.starts_with('.') || name == "target" || name == "node_modules" {
+                            return None;
+                        }
+                        if e.path().is_dir() {
+                            Some(format!(" {}/", name))
+                        } else {
+                            Some(format!(" {}", name))
+                        }
+                    })
+                    .collect();
+
+                sorted_entries.sort();
+                lines.extend(sorted_entries);
+
+                // Overwrite the editor buffer with the directory list
+                state.editor.lines = lines;
+                state.editor.filename = None;
             }
-            state.editor.filename = Some(target_file);
+        } else if path.is_file() {
+            if let Ok(content) = std::fs::read_to_string(path) {
+                state.editor.lines = content.lines().map(String::from).collect();
+                if state.editor.lines.is_empty() {
+                    state.editor.lines.push(String::new());
+                }
+                state.editor.filename = Some(arg);
+            }
         }
     }
 
-    // Workspace Auto-LSP Initialization
     let workspace_dir = std::env::current_dir().unwrap_or_default().to_string_lossy().to_string();
     if let Some(detected_lang) = lsp::detect_workspace_language(&workspace_dir) {
         let default_lsp = match detected_lang {
-            // Systems & Compiled
             "rust" => Some("rust-analyzer"),
             "cpp" | "c" => Some("clangd"),
             "go" => Some("gopls"),
@@ -543,14 +597,10 @@ async fn main() -> Result<()> {
             "ada" => Some("ada_language_server"),
             "swift" => Some("sourcekit-lsp"),
             "nim" => Some("nimlsp"),
-            
-            // JVM & .NET
             "java" => Some("jdtls"),
             "csharp" | "cs" => Some("csharp-ls"), 
             "kotlin" => Some("kotlin-language-server"),
             "scala" => Some("metals"),
-
-            // Web & Scripting
             "python" => Some("pyright"),
             "typescript" | "javascript" => Some("typescript-language-server --stdio"),
             "html" => Some("vscode-html-language-server --stdio"),
@@ -560,18 +610,12 @@ async fn main() -> Result<()> {
             "lua" => Some("lua-language-server"),
             "bash" | "sh" | "shell" => Some("bash-language-server start"),
             "dart" => Some("dart language-server"),
-            
-            // Frameworks
             "svelte" => Some("svelteserver --stdio"),
             "vue" => Some("vls"),
-
-            // Functional
             "haskell" => Some("haskell-language-server-wrapper --lsp"),
             "ocaml" => Some("ocamllsp"),
             "elixir" => Some("elixir-ls"),
             "erlang" => Some("erlang_ls"),
-
-            // Data, Config & Docs
             "json" => Some("vscode-json-language-server --stdio"),
             "yaml" | "yml" => Some("yaml-language-server --stdio"),
             "toml" => Some("taplo lsp stdio"),
@@ -579,12 +623,11 @@ async fn main() -> Result<()> {
             "latex" | "tex" => Some("texlab"),
             "dockerfile" | "docker" => Some("docker-langserver --stdio"),
             "sql" => Some("sqls"),
-            
             _ => None,
         };
 
         if let Some(lsp_cmd) = default_lsp {
-            match state.lsp_client.init_workspace(lsp_cmd, &workspace_dir, diag_tx.clone()).await {
+            match state.lsp_client.init_workspace(lsp_cmd, detected_lang, &workspace_dir, diag_tx.clone()).await {
                 Ok(_) => {
                     state.show_lsp_pane = true;
                     if let Some(ref fname) = state.editor.filename {
@@ -593,7 +636,6 @@ async fn main() -> Result<()> {
                     }
                 }
                 Err(e) => {
-                    // Log it so you actually know when a server is missing
                     tracer.log_event(&format!("Auto-LSP Boot Failed: {}", e));
                 }
             }
@@ -603,8 +645,12 @@ async fn main() -> Result<()> {
     let mut needs_redraw = true;
 
     loop {
-        while let Ok(diags) = diag_rx.try_recv() {
-            state.current_diagnostics = diags;
+        while let Ok((uri, diags)) = diag_rx.try_recv() {
+            if diags.is_empty() {
+                state.current_diagnostics.remove(&uri);
+            } else {
+                state.current_diagnostics.insert(uri, diags);
+            }
             needs_redraw = true;
         }
 

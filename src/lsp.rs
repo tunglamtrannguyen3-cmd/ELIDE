@@ -13,6 +13,7 @@ use crate::lsp_writer::LspWriter;
 
 pub struct LspClient {
     pub server_name: String,
+    pub language_id: String,
     _child: Option<Child>,
     writer: Option<LspWriter>,
 }
@@ -21,17 +22,19 @@ impl LspClient {
     pub fn new() -> Self {
         Self {
             server_name: "Disconnected".to_string(),
+            language_id: "plaintext".to_string(),
             _child: None,
             writer: None,
         }
     }
 
-    /// Initializes the LSP at the workspace (directory) level.
+    /// Initializes the LSP at the workspace (directory) level for a specific language.
     pub async fn init_workspace(
         &mut self,
         lsp_cmd: &str,
+        language_id: &str,
         workspace_dir: &str,
-        diag_tx: mpsc::UnboundedSender<Vec<Diagnostic>>,
+        diag_tx: mpsc::UnboundedSender<(String, Vec<Diagnostic>)>,
     ) -> Result<()> {
         // 1. Kill old process if one exists
         if let Some(mut old_child) = self._child.take() {
@@ -56,6 +59,9 @@ impl LspClient {
             })?;
 
         self.server_name = lsp_cmd.to_string();
+        self.language_id = language_id.to_string();
+        
+        let active_lang = language_id.to_string();
 
         let stdin = child.stdin.take().expect("Failed to open stdin");
         let stdout = child.stdout.take().expect("Failed to open stdout");
@@ -69,29 +75,35 @@ impl LspClient {
         let root_uri = get_file_uri(workspace_dir);
 
         // --- STEP 1: Send the initialize request ---
-        // ✅ FIXED
-let init_req = json!({
-    "jsonrpc": "2.0",
-    "id": 1,
-    "method": "initialize",
-    "params": {
-        "processId": std::process::id(),
-        "rootUri": root_uri,
-        "capabilities": {
-            "textDocument": {
-                "synchronization": {
-                    "dynamicRegistration": false,
-                    "willSave": false,
-                    "willSaveWaitUntil": false,
-                    "didSave": false
-                },
-                "publishDiagnostics": {
-                    "relatedInformation": true
+        let init_req = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "processId": std::process::id(),
+                "rootUri": root_uri,
+                "workspaceFolders": [{
+                    "uri": &root_uri,
+                    "name": "workspace"
+                }],
+                "capabilities": {
+                    "workspace": {
+                        "workspaceFolders": true
+                    },
+                    "textDocument": {
+                        "synchronization": {
+                            "dynamicRegistration": false,
+                            "willSave": false,
+                            "willSaveWaitUntil": false,
+                            "didSave": false
+                        },
+                        "publishDiagnostics": {
+                            "relatedInformation": true
+                        }
+                    }
                 }
             }
-        }
-    }
-});
+        });
         writer.send(init_req)?;
 
         // --- STEP 2: Wait specifically for the initialization response ---
@@ -99,8 +111,6 @@ let init_req = json!({
         loop {
             let msg = read_lsp_message(&mut reader).await?;
             if let Ok(json) = serde_json::from_slice::<Value>(&msg) {
-                // Ensure we are matching the response to our request (id: 1)
-                // This prevents crashing if the server sends telemetry/logs first.
                 if json.get("id").and_then(|id| id.as_u64()) == Some(1) {
                     break;
                 }
@@ -122,26 +132,40 @@ let init_req = json!({
                     Ok(body) => {
                         if let Ok(json) = serde_json::from_slice::<Value>(&body) {
                             if json.get("method").and_then(|m| m.as_str()) == Some("textDocument/publishDiagnostics") {
-                                if let Some(diags_array) = json.pointer("/params/diagnostics").and_then(|d| d.as_array()) {
-                                    let parsed_diags: Vec<Diagnostic> = diags_array.iter().map(|d| {
-                                        let line = d.pointer("/range/start/line")
-                                            .and_then(|l| l.as_u64())
-                                            .unwrap_or(0) as usize + 1;
-                                        
-                                        let message = d.get("message")
-                                            .and_then(|m| m.as_str())
-                                            .unwrap_or("Unknown error")
-                                            .to_string();
-                                            
-                                        // Extract the severity level as a u8 to match the struct
-                                        let severity = d.get("severity")
-                                            .and_then(|s| s.as_u64())
-                                            .map(|n| n as u8);
-                                            
-                                        Diagnostic { line, message, severity }
-                                    }).collect();
+                                if let Some(uri) = json.pointer("/params/uri").and_then(|u| u.as_str()) {
+                                    
+                                    // Extract path and filter by target language
+                                    let path = uri.strip_prefix("file://").unwrap_or(uri);
+                                    if get_language_id(path) != active_lang {
+                                        continue; // Silently drop diagnostics for other languages
+                                    }
 
-                                    let _ = diag_tx.send(parsed_diags);
+                                    let file_uri = uri.to_string();
+
+                                    if let Some(diags_array) = json.pointer("/params/diagnostics").and_then(|d| d.as_array()) {
+                                        let parsed_diags: Vec<Diagnostic> = diags_array.iter().map(|d| {
+                                            let line = d.pointer("/range/start/line")
+                                                .and_then(|l| l.as_u64())
+                                                .unwrap_or(0) as usize + 1;
+                                            
+                                            let message = d.get("message")
+                                                .and_then(|m| m.as_str())
+                                                .unwrap_or("Unknown error")
+                                                .to_string();
+                                                
+                                            let severity = d.get("severity")
+                                                .and_then(|s| s.as_u64())
+                                                .map(|n| n as u8);
+                                                
+                                            Diagnostic { 
+                                                line, 
+                                                message, 
+                                                severity 
+                                            }
+                                        }).collect();
+
+                                        let _ = diag_tx.send((file_uri, parsed_diags));
+                                    }
                                 }
                             }
                         }
@@ -156,6 +180,10 @@ let init_req = json!({
 
     /// Called when the user opens a specific file in the editor
     pub fn open_file(&self, filename: &str, text: &str) -> Result<()> {
+        if get_language_id(filename) != self.language_id {
+            return Ok(()); // Do not send unrelated files to the LSP
+        }
+
         let did_open_req = json!({
             "jsonrpc": "2.0",
             "method": "textDocument/didOpen",
@@ -177,6 +205,10 @@ let init_req = json!({
 
     /// Called when the user types/modifies the file
     pub fn notify_change(&self, filename: &str, version: u32, text: &str) -> Result<()> {
+        if get_language_id(filename) != self.language_id {
+            return Ok(()); // Do not send unrelated file changes to the LSP
+        }
+
         let did_change_req = json!({
             "jsonrpc": "2.0",
             "method": "textDocument/didChange",
@@ -275,7 +307,6 @@ async fn read_lsp_message<R: AsyncBufReadExt + Unpin>(reader: &mut R) -> Result<
     Ok(body)
 }
 
-// ✅ FIXED
 fn get_file_uri(filename: &str) -> String {
     let file_path = std::fs::canonicalize(filename)
         .unwrap_or_else(|_| std::env::current_dir().unwrap_or_default().join(filename));
@@ -284,8 +315,12 @@ fn get_file_uri(filename: &str) -> String {
         .unwrap_or_else(|_| format!("file://{}", filename))
 }
 
-// ✅ FIXED
 pub fn get_language_id(filename: &str) -> &'static str {
+    let lowercase_name = filename.to_lowercase();
+    if lowercase_name.ends_with("dockerfile") {
+        return "dockerfile";
+    }
+
     let ext = filename.rsplit('.').next().unwrap_or("");
     match ext {
         "rs" => "rust",
@@ -297,21 +332,33 @@ pub fn get_language_id(filename: &str) -> &'static str {
         "cs" => "csharp",
         "js" | "jsx" => "javascript",
         "ts" | "tsx" => "typescript",
-        "html" => "html",
-        "css" | "scss" | "less" => "css",
-        "json" => "json",
-        "toml" => "toml",
-        "yaml" | "yml" => "yaml",
-        "sh" | "bash" => "shellscript",
-        "md" => "markdown",
-        "zig" => "zig",
-        "lua" => "lua",
+        "html" | "htm" => "html",
+        "css" => "css",
+        "scss" => "scss",
+        "less" => "less",
         "php" => "php",
         "rb" => "ruby",
-        "hs" => "haskell",
+        "lua" => "lua",
+        "sh" | "bash" => "bash",
         "dart" => "dart",
+        "svelte" => "svelte",
+        "vue" => "vue",
+        "hs" => "haskell",
+        "ml" | "mli" => "ocaml",
+        "ex" | "exs" => "elixir",
+        "erl" | "hrl" => "erlang",
+        "json" => "json",
+        "yaml" | "yml" => "yaml",
+        "toml" => "toml",
+        "md" | "markdown" => "markdown",
+        "tex" | "latex" => "latex",
+        "dockerfile" | "docker" => "dockerfile",
+        "sql" => "sql",
+        "adb" | "ads" | "ada" => "ada",
         "swift" => "swift",
+        "nim" => "nim",
         "kt" | "kts" => "kotlin",
+        "scala" | "sc" => "scala",
         _ => "plaintext",
     }
 }
