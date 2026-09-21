@@ -13,7 +13,7 @@ use anyhow::Result;
 use crossterm::{
     cursor,
     event::KeyCode,
-    style::{Attribute, ResetColor, SetAttribute, SetBackgroundColor, SetForegroundColor},
+    style::{Attribute, Color, ResetColor, SetAttribute, SetForegroundColor},
     terminal::{Clear, ClearType},
     ExecutableCommand,
 };
@@ -171,10 +171,32 @@ impl AppState {
         let mut text_changed = false;
         
         match key.code {
-            KeyCode::Char(c) => { self.editor.insert_char(c); text_changed = true; },
-            KeyCode::Enter => { self.editor.insert_newline(); text_changed = true; },
-            KeyCode::Backspace => { self.editor.backspace(); text_changed = true; },
-            KeyCode::Delete => { self.editor.delete_char(); text_changed = true; },
+            KeyCode::Char(c) => {
+                if self.editor.filename.is_some() {
+                    self.editor.insert_char(c);
+                    text_changed = true;
+                }
+            },
+            KeyCode::Enter => {
+                if self.editor.filename.is_none() {
+                    self.open_selected_tree_item();
+                } else {
+                    self.editor.insert_newline();
+                    text_changed = true;
+                }
+            },
+            KeyCode::Backspace => {
+                if self.editor.filename.is_some() {
+                    self.editor.backspace();
+                    text_changed = true;
+                }
+            },
+            KeyCode::Delete => {
+                if self.editor.filename.is_some() {
+                    self.editor.delete_char();
+                    text_changed = true;
+                }
+            },
             KeyCode::Left => self.editor.move_cursor(0, -1),
             KeyCode::Right => self.editor.move_cursor(0, 1),
             KeyCode::Up => self.editor.move_cursor(-1, 0),
@@ -187,6 +209,71 @@ impl AppState {
                 self.doc_version += 1;
                 let full_text = self.editor.lines.join("\n");
                 let _ = self.lsp_client.notify_change(filename, self.doc_version, &full_text);
+            }
+        }
+    }
+
+    fn open_selected_tree_item(&mut self) {
+        let row = self.editor.cursor.row;
+        if row >= self.editor.lines.len() {
+            return;
+        }
+        let raw_line = &self.editor.lines[row];
+        let trimmed = raw_line.trim();
+
+        if trimmed.is_empty() || trimmed.starts_with("Workspace:") || trimmed.starts_with('─') {
+            return;
+        }
+
+        let target_str = trimmed.trim_end_matches('/');
+        let path = Path::new(target_str);
+
+        if path.is_dir() {
+            if let Ok(canonical_dir) = std::fs::canonicalize(path) {
+                let _ = std::env::set_current_dir(&canonical_dir);
+                if let Ok(entries) = std::fs::read_dir(&canonical_dir) {
+                    let mut lines = vec![
+                        format!(" Workspace: {}", canonical_dir.display()),
+                        " ──────────────────────────────────────────".to_string(),
+                    ];
+
+                    let mut sorted_entries: Vec<String> = entries
+                        .flatten()
+                        .filter_map(|e| {
+                            let name = e.file_name().to_string_lossy().to_string();
+                            if name.starts_with('.') || name == "target" || name == "node_modules" {
+                                return None;
+                            }
+                            if e.path().is_dir() {
+                                Some(format!(" {}/", name))
+                            } else {
+                                Some(format!(" {}", name))
+                            }
+                        })
+                        .collect();
+
+                    sorted_entries.sort();
+                    lines.extend(sorted_entries);
+
+                    self.editor.lines = lines;
+                    self.editor.filename = None;
+                    self.editor.cursor.row = 0;
+                    self.editor.cursor.col = 0;
+                }
+            }
+        } else if path.is_file() {
+            if let Ok(content) = std::fs::read_to_string(path) {
+                let filename_str = path.to_string_lossy().to_string();
+                self.editor.lines = content.lines().map(String::from).collect();
+                if self.editor.lines.is_empty() {
+                    self.editor.lines.push(String::new());
+                }
+                self.editor.filename = Some(filename_str.clone());
+                self.editor.cursor.row = 0;
+                self.editor.cursor.col = 0;
+
+                let full_text = self.editor.lines.join("\n");
+                let _ = self.lsp_client.open_file(&filename_str, &full_text);
             }
         }
     }
@@ -206,27 +293,30 @@ struct Layout {
 impl Layout {
     fn compute(state: &AppState) -> Result<Self> {
         let (term_width, term_height) = crossterm::terminal::size()?;
-        let banner_height = 3;
+        
+        let banner_height = 1;
+        let status_height = 1;
+        let palette_height = 1;
         
         let term_pane_height = if state.palette.is_active {
-            ((term_height as usize) * 60) / 100
+            ((term_height as usize) * 30) / 100
         } else {
             0
         };
         
         let editor_height = (term_height as usize)
             .saturating_sub(term_pane_height)
-            .saturating_sub(2)
-            .saturating_sub(banner_height);
+            .saturating_sub(banner_height + status_height + palette_height);
             
         let debug_width = if state.show_lsp_pane {
-            ((term_width as usize) * 20) / 100
+            ((term_width as usize) * 25) / 100
         } else {
             0
         };
         
         let codespace_width = (term_width as usize).saturating_sub(debug_width);
-        let edit_pane_w = codespace_width.saturating_sub(6);
+        // x=2 padding + 6 chars line number/margin + 1 right padding = 9 chars subtracted
+        let edit_pane_w = codespace_width.saturating_sub(9);
 
         Ok(Self {
             term_width, term_height, banner_height, term_pane_height,
@@ -235,11 +325,71 @@ impl Layout {
     }
 }
 
+fn set_border_color(stdout: &mut Stdout) -> Result<()> {
+    stdout.execute(SetForegroundColor(Color::Rgb { r: 55, g: 87, b: 59 }))?;
+    Ok(())
+}
+
+fn draw_frame(stdout: &mut Stdout, state: &AppState, layout: &Layout) -> Result<()> {
+    set_border_color(stdout)?;
+    
+    // 1. Top border
+    stdout.execute(cursor::MoveTo(0, 0))?;
+    write!(stdout, "╭{}╮", "─".repeat(layout.term_width.saturating_sub(2) as usize))?;
+
+    // 2. Editor side borders & LSP divider
+    let divider_x = layout.codespace_width.saturating_sub(1) as u16;
+    for i in 0..layout.editor_height {
+        let y = (layout.banner_height + i) as u16;
+        stdout.execute(cursor::MoveTo(0, y))?;
+        write!(stdout, "│")?;
+        
+        if state.show_lsp_pane && layout.debug_width > 0 {
+            stdout.execute(cursor::MoveTo(divider_x, y))?;
+            write!(stdout, "│")?;
+        }
+        
+        stdout.execute(cursor::MoveTo(layout.term_width - 1, y))?;
+        write!(stdout, "│")?;
+    }
+
+    // 3. Status Bar Divider
+    let status_y = (layout.banner_height + layout.editor_height) as u16;
+    stdout.execute(cursor::MoveTo(0, status_y))?;
+    write!(stdout, "├{}┤", "─".repeat(layout.term_width.saturating_sub(2) as usize))?;
+    
+    // 4. Terminal side borders
+    for i in 0..layout.term_pane_height {
+        let y = status_y + 1 + i as u16;
+        stdout.execute(cursor::MoveTo(0, y))?;
+        write!(stdout, "│")?;
+        stdout.execute(cursor::MoveTo(layout.term_width - 1, y))?;
+        write!(stdout, "│")?;
+    }
+
+    // 5. Bottom Palette Border
+    let bottom_y = layout.term_height.saturating_sub(1);
+    stdout.execute(cursor::MoveTo(0, bottom_y))?;
+    write!(stdout, "╰{}╯", "─".repeat(layout.term_width.saturating_sub(2) as usize))?;
+
+    // Connect LSP divider cleanly
+    if state.show_lsp_pane && layout.debug_width > 0 {
+        stdout.execute(cursor::MoveTo(divider_x, 0))?;
+        write!(stdout, "┬")?;
+        stdout.execute(cursor::MoveTo(divider_x, status_y))?;
+        write!(stdout, "┴")?;
+    }
+
+    stdout.execute(ResetColor)?;
+    Ok(())
+}
+
 fn render_ui(stdout: &mut Stdout, state: &mut AppState, layout: &Layout) -> Result<()> {
     stdout.execute(cursor::Hide)?;
     stdout.execute(Clear(ClearType::All))?;
 
-    draw_banner(stdout)?;
+    draw_frame(stdout, state, layout)?;
+    draw_banner(stdout, layout)?;
     draw_editor(stdout, state, layout)?;
     draw_lsp_pane(stdout, state, layout)?;
     draw_status_bar(stdout, state, layout)?;
@@ -256,18 +406,11 @@ fn render_ui(stdout: &mut Stdout, state: &mut AppState, layout: &Layout) -> Resu
     Ok(())
 }
 
-fn draw_banner(stdout: &mut Stdout) -> Result<()> {
-    let banner = [
-        "┌──────────────────────────────────────────────┐",
-        "│  E L I D E  ::  Easier Life @ IDE  :: v2.0.3 │",
-        "└──────────────────────────────────────────────┘",
-    ];
-    for (i, line) in banner.iter().enumerate() {
-        stdout.execute(cursor::MoveTo(0, i as u16))?;
-        stdout.execute(SetForegroundColor(colors::Palette::FUNCTION_BLUE))?; 
-        write!(stdout, "{}", line)?;
-        stdout.execute(ResetColor)?;
-    }
+fn draw_banner(stdout: &mut Stdout, _layout: &Layout) -> Result<()> {
+    stdout.execute(cursor::MoveTo(2, 0))?;
+    stdout.execute(SetForegroundColor(colors::Palette::FUNCTION_BLUE))?; 
+    write!(stdout, " E L I D E  ::  Easier Life @ IDE  :: v2.0.5 ")?;
+    stdout.execute(ResetColor)?;
     Ok(())
 }
 
@@ -275,7 +418,8 @@ fn draw_editor(stdout: &mut Stdout, state: &AppState, layout: &Layout) -> Result
     for i in 0..layout.editor_height {
         let row = state.editor.row_offset + i;
         let screen_y = (layout.banner_height + i) as u16;
-        stdout.execute(cursor::MoveTo(0, screen_y))?;
+        
+        stdout.execute(cursor::MoveTo(2, screen_y))?;
         
         if row < state.editor.lines.len() {
             let line = &state.editor.lines[row];
@@ -285,8 +429,11 @@ fn draw_editor(stdout: &mut Stdout, state: &AppState, layout: &Layout) -> Result
                 .take(layout.edit_pane_w)
                 .collect();
             
+            // Clean relaxing line numbers mapping
             stdout.execute(SetForegroundColor(colors::Palette::COMMENT_GRAY))?;
-            write!(stdout, "{:3} | ", row + 1)?;
+            write!(stdout, "{:3} ", row + 1)?;
+            set_border_color(stdout)?;
+            write!(stdout, "│ ")?;
 
             let mut in_string = false;
             let mut in_comment = false;
@@ -323,16 +470,14 @@ fn draw_editor(stdout: &mut Stdout, state: &AppState, layout: &Layout) -> Result
                 }
             }
             let _ = flush_token(stdout, &mut word, None);
-            
-            let visual_len = chars.len();
-            if visual_len < layout.edit_pane_w {
-                stdout.execute(ResetColor)?;
-                write!(stdout, "{}", " ".repeat(layout.edit_pane_w - visual_len))?;
-            }
             stdout.execute(ResetColor)?;
         } else {
             stdout.execute(SetForegroundColor(colors::Palette::COMMENT_GRAY))?;
-            write!(stdout, "{}", "~".repeat(layout.codespace_width.min(4)))?;
+            write!(stdout, "    ")?;
+            set_border_color(stdout)?;
+            write!(stdout, "│ ")?;
+            stdout.execute(SetForegroundColor(colors::Palette::COMMENT_GRAY))?;
+            write!(stdout, "~")?;
             stdout.execute(ResetColor)?;
         }
     }
@@ -342,29 +487,22 @@ fn draw_editor(stdout: &mut Stdout, state: &AppState, layout: &Layout) -> Result
 fn draw_lsp_pane(stdout: &mut Stdout, state: &mut AppState, layout: &Layout) -> Result<()> {
     if !state.show_lsp_pane || layout.debug_width == 0 { return Ok(()); }
 
-    let debug_x = layout.codespace_width as u16;
-    let total_top_height = layout.banner_height + layout.editor_height;
+    let divider_x = layout.codespace_width.saturating_sub(1) as u16;
+    let debug_x = divider_x + 1;
     
-    for i in 0..total_top_height {
-        stdout.execute(cursor::MoveTo(debug_x, i as u16))?;
-        stdout.execute(SetForegroundColor(colors::Palette::NAVY_GRAY))?;
-        write!(stdout, "│")?;
-        stdout.execute(ResetColor)?;
-    }
-
-    stdout.execute(cursor::MoveTo(debug_x + 2, 0))?;
+    stdout.execute(cursor::MoveTo(debug_x + 1, 1))?;
     stdout.execute(SetForegroundColor(colors::Palette::HINT_ICE_BLUE))?;
     write!(stdout, "LSP Workspace")?;
     stdout.execute(ResetColor)?;
 
     if state.current_diagnostics.is_empty() {
-        stdout.execute(cursor::MoveTo(debug_x + 2, 2))?;
+        stdout.execute(cursor::MoveTo(debug_x + 1, 3))?;
         stdout.execute(SetForegroundColor(colors::Palette::SUCCESS_LIME))?;
         write!(stdout, "Nominal")?;
         stdout.execute(ResetColor)?;
     } else {
         let mut wrapped_lines = Vec::new();
-        let text_width = layout.debug_width.saturating_sub(3);
+        let text_width = layout.debug_width.saturating_sub(4);
         
         if text_width > 0 {
             let mut sorted_uris: Vec<_> = state.current_diagnostics.keys().collect();
@@ -402,12 +540,12 @@ fn draw_lsp_pane(stdout: &mut Stdout, state: &mut AppState, layout: &Layout) -> 
             }
         }
 
-        let max_display_lines = total_top_height.saturating_sub(3);
+        let max_display_lines = layout.editor_height.saturating_sub(3);
         let max_scroll = wrapped_lines.len().saturating_sub(max_display_lines);
         state.lsp_scroll_offset = state.lsp_scroll_offset.min(max_scroll);
 
         for (idx, (line, status)) in wrapped_lines.iter().skip(state.lsp_scroll_offset).take(max_display_lines).enumerate() {
-            stdout.execute(cursor::MoveTo(debug_x + 2, 2 + idx as u16))?;
+            stdout.execute(cursor::MoveTo(debug_x + 1, 3 + idx as u16))?;
             if !line.is_empty() {
                 stdout.execute(SetAttribute(colors::attribute_for_status(*status)))?;
                 stdout.execute(SetForegroundColor(colors::color_for_status(*status)))?;
@@ -422,13 +560,10 @@ fn draw_lsp_pane(stdout: &mut Stdout, state: &mut AppState, layout: &Layout) -> 
 
 fn draw_status_bar(stdout: &mut Stdout, state: &AppState, layout: &Layout) -> Result<()> {
     let status_row = (layout.banner_height + layout.editor_height) as u16;
-    stdout.execute(cursor::MoveTo(0, status_row))?;
-    
-    stdout.execute(SetForegroundColor(colors::Palette::TEXT_DEFAULT))?;
-    stdout.execute(SetBackgroundColor(colors::Palette::NAVY_GRAY))?;
+    stdout.execute(cursor::MoveTo(2, status_row))?;
     
     let status = format!(
-        " Codespace: {} | Row: {} Col: {} | LSP: {} ({}) ",
+        " {} | R:{} C:{} | {} ({}) ",
         state.editor.filename.as_deref().unwrap_or("[Workspace]"),
         state.editor.cursor.row + 1,
         state.editor.cursor.col + 1,
@@ -436,7 +571,8 @@ fn draw_status_bar(stdout: &mut Stdout, state: &AppState, layout: &Layout) -> Re
         state.lsp_client.language_id.as_str(),
     );
     
-    write!(stdout, "{:width$}", status, width = layout.term_width as usize)?;
+    stdout.execute(SetForegroundColor(colors::Palette::TEXT_DEFAULT))?;
+    write!(stdout, "{}", status)?;
     stdout.execute(ResetColor)?;
     Ok(())
 }
@@ -452,7 +588,7 @@ fn draw_terminal_pane(stdout: &mut Stdout, state: &AppState, layout: &Layout) ->
         }
     }
     
-    let term_output_height = layout.term_pane_height.saturating_sub(1);
+    let term_output_height = layout.term_pane_height;
     let max_scroll_y = display_history.len().saturating_sub(term_output_height);
     let current_scroll_y = state.term_scroll_y.min(max_scroll_y);
     
@@ -460,8 +596,10 @@ fn draw_terminal_pane(stdout: &mut Stdout, state: &AppState, layout: &Layout) ->
         .saturating_sub(term_output_height)
         .saturating_sub(current_scroll_y);
     
+    let max_width = layout.term_width.saturating_sub(4) as usize;
+
     for (idx, (line, success)) in display_history.iter().skip(start_idx).take(term_output_height).enumerate() {
-        stdout.execute(cursor::MoveTo(0, term_start_row + idx as u16))?;
+        stdout.execute(cursor::MoveTo(2, term_start_row + idx as u16))?;
         
         let status_type = if *success { 
             colors::Status::Success 
@@ -481,7 +619,7 @@ fn draw_terminal_pane(stdout: &mut Stdout, state: &AppState, layout: &Layout) ->
         let display_str: String = if state.term_scroll_x < chars.len() {
             chars.into_iter()
                 .skip(state.term_scroll_x)
-                .take(layout.term_width as usize)
+                .take(max_width)
                 .collect()
         } else {
             String::new()
@@ -489,7 +627,7 @@ fn draw_terminal_pane(stdout: &mut Stdout, state: &AppState, layout: &Layout) ->
 
         stdout.execute(SetAttribute(colors::attribute_for_status(status_type)))?;
         stdout.execute(SetForegroundColor(colors::color_for_status(status_type)))?;
-        write!(stdout, "{:<width$}", display_str, width = layout.term_width as usize)?;
+        write!(stdout, "{}", display_str)?;
         
         stdout.execute(SetAttribute(Attribute::Reset))?;
         stdout.execute(ResetColor)?;
@@ -498,14 +636,15 @@ fn draw_terminal_pane(stdout: &mut Stdout, state: &AppState, layout: &Layout) ->
 }
 
 fn draw_command_palette(stdout: &mut Stdout, state: &AppState, layout: &Layout) -> Result<()> {
-    stdout.execute(cursor::MoveTo(0, layout.term_height - 1))?;
+    let bottom_y = layout.term_height.saturating_sub(1);
+    stdout.execute(cursor::MoveTo(2, bottom_y))?;
     if state.palette.is_active {
         stdout.execute(SetForegroundColor(colors::Palette::TYPE_YELLOW))?;
-        write!(stdout, ": {}", state.palette.input_buffer)?;
+        write!(stdout, " : {} ", state.palette.input_buffer)?;
         stdout.execute(ResetColor)?;
     } else {
         stdout.execute(SetForegroundColor(colors::Palette::COMMENT_GRAY))?;
-        write!(stdout, ": (press Alt+T for terminal, Esc to close)")?;
+        write!(stdout, " : (Alt+T term, Esc close) ")?;
         stdout.execute(ResetColor)?;
     }
     Ok(())
@@ -513,11 +652,14 @@ fn draw_command_palette(stdout: &mut Stdout, state: &AppState, layout: &Layout) 
 
 fn sync_cursor(stdout: &mut Stdout, state: &AppState, layout: &Layout) -> Result<()> {
     if state.palette.is_active {
-        stdout.execute(cursor::MoveTo((2 + state.palette.input_buffer.len()) as u16, layout.term_height - 1))?;
+        let prompt_len = 3; // " : " length
+        stdout.execute(cursor::MoveTo((2 + prompt_len + state.palette.input_buffer.len()) as u16, layout.term_height.saturating_sub(1)))?;
     } else {
         let screen_row = (state.editor.cursor.row.saturating_sub(state.editor.row_offset) + layout.banner_height) as u16;
         let visual_col = state.editor.visual_cursor_col().saturating_sub(state.editor.col_offset);
-        let screen_col = (visual_col + 6).min(layout.codespace_width.saturating_sub(1)) as u16;
+        
+        // Left offset is x=2 padding + 6 chars for line numbers
+        let screen_col = (visual_col + 8).min(layout.codespace_width.saturating_sub(2)) as u16;
         
         if (screen_row as usize) < (layout.banner_height + layout.editor_height) {
             stdout.execute(cursor::MoveTo(screen_col, screen_row))?;
@@ -536,17 +678,14 @@ async fn main() -> Result<()> {
     let mut state = AppState::new();
     let (diag_tx, mut diag_rx) = mpsc::unbounded_channel::<(String, Vec<diagnostics::Diagnostic>)>();
 
-    // 1. Distinguish between directory launch (e.g. `elide .`) and single file launch
     if let Some(arg) = std::env::args().nth(1) {
         let path = Path::new(&arg);
         
         if path.is_dir() {
-            // Update the underlying process working directory
             let canonical_dir = std::fs::canonicalize(path)
                 .unwrap_or_else(|_| path.to_path_buf());
             let _ = std::env::set_current_dir(&canonical_dir);
 
-            // 2. Force listing the directory contents into the main editor view
             if let Ok(entries) = std::fs::read_dir(&canonical_dir) {
                 let mut lines = vec![
                     format!(" Workspace: {}", canonical_dir.display()),
@@ -557,7 +696,6 @@ async fn main() -> Result<()> {
                     .flatten()
                     .filter_map(|e| {
                         let name = e.file_name().to_string_lossy().to_string();
-                        // Clean up the view by hiding common build/hidden directories
                         if name.starts_with('.') || name == "target" || name == "node_modules" {
                             return None;
                         }
@@ -572,7 +710,6 @@ async fn main() -> Result<()> {
                 sorted_entries.sort();
                 lines.extend(sorted_entries);
 
-                // Overwrite the editor buffer with the directory list
                 state.editor.lines = lines;
                 state.editor.filename = None;
             }
