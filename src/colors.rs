@@ -3,28 +3,29 @@ use crossterm::style::{Attribute, Color};
 pub struct Palette;
 
 impl Palette {
-    // --- Status Colors ---
-    pub const ERROR_RED: Color = Color::Rgb { r: 227, g: 83, b: 54 };
-    pub const WARNING_GOLD: Color = Color::Rgb { r: 255, g: 215, b: 0 };
-    pub const HINT_ICE_BLUE: Color = Color::Rgb { r: 193, g: 213, b: 240 };
-    pub const SUCCESS_LIME: Color = Color::Rgb { r: 137, g: 243, b: 54 };
-    pub const NAVY_GRAY: Color = Color::Rgb { r: 112, g: 128, b: 144 };
-
-    // --- Relaxing Syntax Highlighting Colors ---
-    pub const TEXT_DEFAULT: Color = Color::Rgb { r: 200, g: 204, b: 214 }; // Soft neutral gray
-    pub const KEYWORD_PURPLE: Color = Color::Rgb { r: 184, g: 176, b: 210 }; // Dusty lavender
-    pub const STRING_GREEN: Color = Color::Rgb { r: 164, g: 190, b: 166 }; // Muted sage
-    pub const COMMENT_GRAY: Color = Color::Rgb { r: 125, g: 130, b: 145 }; // Quiet slate
-    pub const FUNCTION_BLUE: Color = Color::Rgb { r: 157, g: 180, b: 202 }; // Desaturated blue-gray
-    pub const TYPE_YELLOW: Color = Color::Rgb { r: 205, g: 195, b: 158 }; // Muted warm sand
-    pub const NUMBER_ORANGE: Color = Color::Rgb { r: 205, g: 166, b: 143 }; // Dusty peach
+    // Relaxing Catppuccin-style pastels
+    pub const KEYWORD_MAUVE: Color = Color::Rgb { r: 203, g: 166, b: 247 };
+    pub const TYPE_YELLOW: Color = Color::Rgb { r: 249, g: 226, b: 175 };
+    pub const NUMBER_PEACH: Color = Color::Rgb { r: 250, g: 179, b: 135 };
+    pub const STRING_GREEN: Color = Color::Rgb { r: 166, g: 227, b: 161 };
+    pub const FUNCTION_BLUE: Color = Color::Rgb { r: 137, g: 180, b: 250 };
+    pub const TEXT_DEFAULT: Color = Color::Rgb { r: 205, g: 214, b: 244 };
+    pub const COMMENT_GRAY: Color = Color::Rgb { r: 147, g: 153, b: 178 };
+    pub const UI_BORDER: Color = Color::Rgb { r: 88, g: 91, b: 112 };
+    
+    // Status colors for LSP and Terminal
+    pub const SUCCESS_GREEN: Color = Color::Rgb { r: 166, g: 227, b: 161 };
+    pub const ERROR_RED: Color = Color::Rgb { r: 243, g: 139, b: 168 };
+    pub const WARNING_YELLOW: Color = Color::Rgb { r: 250, g: 227, b: 176 };
+    pub const HINT_TEAL: Color = Color::Rgb { r: 148, g: 226, b: 213 };
+    pub const UNKNOWN_FLAMINGO: Color = Color::Rgb { r: 242, g: 205, b: 205 };
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy)]
 pub enum Status {
     Success,
-    Warning,
     Error,
+    Warning,
     Hint,
     UnknownCommand,
     UnknownCode,
@@ -32,17 +33,17 @@ pub enum Status {
 
 pub fn color_for_status(status: Status) -> Color {
     match status {
-        Status::Success => Palette::SUCCESS_LIME,
-        Status::Warning => Palette::WARNING_GOLD,
+        Status::Success => Palette::SUCCESS_GREEN,
         Status::Error => Palette::ERROR_RED,
-        Status::Hint => Palette::HINT_ICE_BLUE,
-        Status::UnknownCommand | Status::UnknownCode => Palette::NAVY_GRAY,
+        Status::Warning => Palette::WARNING_YELLOW,
+        Status::Hint => Palette::HINT_TEAL,
+        Status::UnknownCommand | Status::UnknownCode => Palette::UNKNOWN_FLAMINGO,
     }
 }
 
 pub fn attribute_for_status(status: Status) -> Attribute {
     match status {
-        Status::Success | Status::Warning | Status::Error | Status::Hint => Attribute::Bold,
-        Status::UnknownCommand | Status::UnknownCode => Attribute::Dim,
+        Status::Error | Status::UnknownCommand | Status::Warning => Attribute::Bold,
+        _ => Attribute::Reset,
     }
 }

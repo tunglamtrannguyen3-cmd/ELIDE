@@ -9,6 +9,8 @@ pub enum PaletteAction {
     Info,
     Help,
     Bro,
+    Funcs,
+    Joke(String),
     RunBash(String),
     UnknownCommand(String),
     Empty,
@@ -49,14 +51,17 @@ impl Palette {
 
         match trimmed {
             "-s" | "--save" | "save" | ":w" => return PaletteAction::Save,
-            "-d" | "--debug" | "debug" => return PaletteAction::Debug,
+            "-d" | "--debug" | "debug" | ":verify" => return PaletteAction::Debug,
             "-i" | "--info" | "info" => return PaletteAction::Info,
             "-h" | "-?" | "--help" | "help" | "?" => return PaletteAction::Help,
             "-bro!" | "bro" | "bro!" => return PaletteAction::Bro,
+            ":funcs" => return PaletteAction::Funcs,
             _ => {}
         }
 
-        if trimmed.starts_with("new ") {
+        if trimmed.starts_with("--im-") {
+            PaletteAction::Joke(trimmed.to_string())
+        } else if trimmed.starts_with("new ") {
             PaletteAction::New(Self::extract_arg(trimmed, "new "))
         } else if trimmed.starts_with("code ") {
             PaletteAction::Code(Self::extract_arg(trimmed, "code "))
@@ -87,11 +92,45 @@ impl Palette {
                 Err(e) => (format!("Save Error: {}", e), false),
             },
             PaletteAction::Debug => {
-                let target = editor.filename.as_deref().unwrap_or("main.rs");
-                let debug_cmd = format!("gdb --batch -ex r -ex bt --args ./{}", target);
-                match process::run_bash_cmd(&debug_cmd).await {
-                    Ok(res) => (res.output, res.success),
-                    Err(e) => (format!("Debug Exec Error: {}", e), false),
+                let fname = editor.filename.as_deref().unwrap_or("");
+                
+                // Route to language-specific formal verification or syntax checkers
+                let cmd = if fname.ends_with(".rs") || fname.is_empty() {
+                    "cargo check".to_string() 
+                } else if fname.ends_with(".adb") || fname.ends_with(".ads") {
+                    "gnatprove --mode=prove".to_string() // SPARK verification for Ada
+                } else if fname.ends_with(".c") || fname.ends_with(".cpp") || fname.ends_with(".h") {
+                    "cppcheck --enable=all .".to_string() // Static analysis for C/C++
+                } else if fname.ends_with(".go") {
+                    "go vet ./...".to_string() // Standard Go static analysis
+                } else if fname.ends_with(".py") {
+                    format!("mypy {}", fname) // Type checking for Python
+                } else if fname.ends_with(".ts") {
+                    format!("tsc --noEmit {}", fname) // TypeScript verification
+                } else if fname.ends_with(".js") {
+                    format!("eslint {}", fname) // JavaScript linting
+                } else if fname.ends_with(".sh") || fname.ends_with(".bash") {
+                    format!("shellcheck {}", fname) // Shell script analysis
+                } else if fname.ends_with(".java") {
+                    format!("javac -Xlint:all {}", fname) // Java linting
+                } else if fname.ends_with(".zig") {
+                    format!("zig ast-check {}", fname) // Zig syntax check
+                } else if fname.ends_with(".rb") {
+                    format!("rubocop {}", fname) // Ruby static code analyzer
+                } else {
+                    "echo 'we don't support this file type'".to_string()
+                };
+                
+                match process::run_bash_cmd(&cmd).await {
+                    Ok(res) => {
+                        let out = if res.output.trim().is_empty() { 
+                            format!("Verification passed cleanly via `{}`.", cmd) 
+                        } else { 
+                            res.output 
+                        };
+                        (out, res.success)
+                    },
+                    Err(e) => (format!("Verify/Debug Error: {}", e), false),
                 }
             }
             PaletteAction::Info => {
@@ -109,7 +148,7 @@ impl Palette {
                      • Skills        : Systems Programming, Rust, C, Ada, Micro-skills, Cooking, Chess, Touhou on Lunatic\n\
                      -----------------------------------\n\
                      ℹ️ [EDITOR INFO]\n\
-                     • Version       : v2.0.5\n\
+                     • Version       : v2.1.0\n\
                      • Target File   : {}\n\
                      • Total Lines   : {}\n\
                      • Cursor Pos    : Row {}, Col {}\n\
@@ -125,13 +164,37 @@ impl Palette {
             }
             PaletteAction::Help => (
                 "📖 [ELIDE COMMAND PALETTE MANUAL]\n\
-                 • Flags: -s (Save), -d (Debug), -i (Info), -bro! (Vent)\n\
+                 • Flags: -s (Save), -d/:verify (Check/Debug), -i (Info), -bro! (Vent)\n\
                  • File Cmds: new <file>, code <file>, switch <file>\n\
-                 • Runner: acel <cmd> (Replaces legacy compile/set-build)\n\
-                 • Overrides: lsp <cmd>, sh <cmd>"
+                 • Foreground Process: acel <cmd> \n\
+                 • Advanced: :funcs (List functions)\n\
+                 • LSP and Bash: lsp <cmd>, sh <cmd>"
                     .to_string(),
                 true,
             ),
+            PaletteAction::Funcs => {
+                let funcs: Vec<String> = editor.lines.iter()
+                    .enumerate()
+                    .filter(|(_, l)| l.trim().starts_with("fn ") || l.trim().starts_with("pub fn ") || l.trim().starts_with("async fn "))
+                    .map(|(i, l)| format!("L{}: {}", i + 1, l.trim().trim_end_matches('{').trim()))
+                    .collect();
+                    
+                if funcs.is_empty() {
+                    ("No functions found in current buffer.".to_string(), true)
+                } else {
+                    (format!("📌 [FUNCTIONS IN FILE]\n{}", funcs.join("\n")), true)
+                }
+            }
+            PaletteAction::Joke(joke) => {
+                let msg = match joke.as_str() {
+                    "--im-stuck" => "Have you tried turning it off and on again? Or maybe read the docs... jk, just ask ChatGPT.",
+                    "--im-bored" => "Type -bro! for a game recommendation, or rewrite this editor in Brainfuck.",
+                    "--im-hungry" => "Go eat! Your code won't compile better on an empty stomach.",
+                    "--im-tired" => "Git commit, git push, go to bed. The bug will be there tomorrow.",
+                    _ => "I am an editor, not a therapist. But you got this!",
+                };
+                (format!("🤖 {}", msg), true)
+            }
             PaletteAction::Bro => {
                 let games = [
                     "Minecraft (Sandbox / Build & Relax)",

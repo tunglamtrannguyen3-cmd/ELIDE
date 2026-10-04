@@ -13,7 +13,7 @@ use anyhow::Result;
 use crossterm::{
     cursor,
     event::KeyCode,
-    style::{Attribute, Color, ResetColor, SetAttribute, SetForegroundColor},
+    style::{Attribute, ResetColor, SetAttribute, SetForegroundColor},
     terminal::{Clear, ClearType},
     ExecutableCommand,
 };
@@ -35,16 +35,20 @@ fn flush_token(stdout: &mut Stdout, word: &mut String, next_char: Option<char>) 
     let color = match word.as_str() {
         "fn" | "let" | "mut" | "return" | "if" | "else" | "match" | "struct" | 
         "enum" | "pub" | "use" | "impl" | "for" | "while" | "loop" | "const" | 
-        "static" | "async" | "await" | "trait" | "type" | "as" | "ref" 
-            => colors::Palette::KEYWORD_PURPLE,
-        "String" | "usize" | "i32" | "u32" | "f64" | "bool" | "Vec" | 
-        "Option" | "Result" | "Self" 
+        "static" | "async" | "await" | "trait" | "type" | "as" | "ref" | "mod" |
+        "where" | "dyn" | "move" | "unsafe" | "extern" | "break" | "continue"
+            => colors::Palette::KEYWORD_MAUVE,
+        "String" | "usize" | "isize" | "i8" | "i16" | "i32" | "i64" | "i128" |
+        "u8" | "u16" | "u32" | "u64" | "u128" | "f32" | "f64" | "bool" | "char" |
+        "Vec" | "Option" | "Result" | "Self" | "Box" | "Rc" | "Arc" | "HashMap" | "BTreeMap"
             => colors::Palette::TYPE_YELLOW,
-        "true" | "false" 
-            => colors::Palette::NUMBER_ORANGE,
+        "true" | "false" | "Some" | "None" | "Ok" | "Err"
+            => colors::Palette::NUMBER_PEACH,
         _ => {
-            if word.chars().all(|c| c.is_ascii_digit()) {
-                colors::Palette::NUMBER_ORANGE
+            if word.starts_with('\'') {
+                colors::Palette::STRING_GREEN
+            } else if word.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '_') || word.starts_with("0x") {
+                colors::Palette::NUMBER_PEACH
             } else if next_char == Some('(') || next_char == Some('!') {
                 colors::Palette::FUNCTION_BLUE
             } else {
@@ -65,6 +69,7 @@ struct AppState {
     lsp_client: LspClient,
     current_diagnostics: HashMap<String, Vec<diagnostics::Diagnostic>>,
     command_history: Vec<(String, bool)>,
+    clipboard: String,
     doc_version: u32,
     
     show_lsp_pane: bool,
@@ -81,6 +86,7 @@ impl AppState {
             lsp_client: LspClient::new(),
             current_diagnostics: HashMap::new(),
             command_history: Vec::new(),
+            clipboard: String::new(),
             doc_version: 1,
             show_lsp_pane: false,
             lsp_scroll_offset: 0,
@@ -130,6 +136,24 @@ impl AppState {
                 self.term_scroll_y = 0;
                 self.term_scroll_x = 0;
                 
+                let input = self.palette.input_buffer.trim().to_string();
+                
+                // Intercept custom editor commands
+                if input == "\"+y" {
+                    self.clipboard = self.editor.lines.join("\n");
+                    self.command_history.push(("File copied to internal clipboard".to_string(), true));
+                    self.palette.input_buffer.clear();
+                    return;
+                } else if input == "\"+p" {
+                    let clip_lines: Vec<String> = self.clipboard.lines().map(|s| s.to_string()).collect();
+                    if !clip_lines.is_empty() {
+                        self.editor.lines = clip_lines;
+                        self.command_history.push(("Pasted from internal clipboard".to_string(), true));
+                    }
+                    self.palette.input_buffer.clear();
+                    return;
+                }
+
                 let action = self.palette.parse_command(self.editor.filename.as_deref());
                 let lsp_start_cmd = match &action {
                     PaletteAction::SetLsp(cmd) if !cmd.is_empty() => Some(cmd.clone()),
@@ -235,6 +259,7 @@ impl AppState {
                     let mut lines = vec![
                         format!(" Workspace: {}", canonical_dir.display()),
                         " ──────────────────────────────────────────".to_string(),
+                        " ../".to_string(), // Ensure parent directory navigation is available
                     ];
 
                     let mut sorted_entries: Vec<String> = entries
@@ -315,7 +340,6 @@ impl Layout {
         };
         
         let codespace_width = (term_width as usize).saturating_sub(debug_width);
-        // x=2 padding + 6 chars line number/margin + 1 right padding = 9 chars subtracted
         let edit_pane_w = codespace_width.saturating_sub(9);
 
         Ok(Self {
@@ -326,18 +350,16 @@ impl Layout {
 }
 
 fn set_border_color(stdout: &mut Stdout) -> Result<()> {
-    stdout.execute(SetForegroundColor(Color::Rgb { r: 55, g: 87, b: 59 }))?;
+    stdout.execute(SetForegroundColor(colors::Palette::UI_BORDER))?;
     Ok(())
 }
 
 fn draw_frame(stdout: &mut Stdout, state: &AppState, layout: &Layout) -> Result<()> {
     set_border_color(stdout)?;
     
-    // 1. Top border
     stdout.execute(cursor::MoveTo(0, 0))?;
     write!(stdout, "╭{}╮", "─".repeat(layout.term_width.saturating_sub(2) as usize))?;
 
-    // 2. Editor side borders & LSP divider
     let divider_x = layout.codespace_width.saturating_sub(1) as u16;
     for i in 0..layout.editor_height {
         let y = (layout.banner_height + i) as u16;
@@ -353,12 +375,10 @@ fn draw_frame(stdout: &mut Stdout, state: &AppState, layout: &Layout) -> Result<
         write!(stdout, "│")?;
     }
 
-    // 3. Status Bar Divider
     let status_y = (layout.banner_height + layout.editor_height) as u16;
     stdout.execute(cursor::MoveTo(0, status_y))?;
     write!(stdout, "├{}┤", "─".repeat(layout.term_width.saturating_sub(2) as usize))?;
     
-    // 4. Terminal side borders
     for i in 0..layout.term_pane_height {
         let y = status_y + 1 + i as u16;
         stdout.execute(cursor::MoveTo(0, y))?;
@@ -367,12 +387,10 @@ fn draw_frame(stdout: &mut Stdout, state: &AppState, layout: &Layout) -> Result<
         write!(stdout, "│")?;
     }
 
-    // 5. Bottom Palette Border
     let bottom_y = layout.term_height.saturating_sub(1);
     stdout.execute(cursor::MoveTo(0, bottom_y))?;
     write!(stdout, "╰{}╯", "─".repeat(layout.term_width.saturating_sub(2) as usize))?;
 
-    // Connect LSP divider cleanly
     if state.show_lsp_pane && layout.debug_width > 0 {
         stdout.execute(cursor::MoveTo(divider_x, 0))?;
         write!(stdout, "┬")?;
@@ -409,7 +427,7 @@ fn render_ui(stdout: &mut Stdout, state: &mut AppState, layout: &Layout) -> Resu
 fn draw_banner(stdout: &mut Stdout, _layout: &Layout) -> Result<()> {
     stdout.execute(cursor::MoveTo(2, 0))?;
     stdout.execute(SetForegroundColor(colors::Palette::FUNCTION_BLUE))?; 
-    write!(stdout, " E L I D E  ::  Easier Life @ IDE  :: v2.0.5 ")?;
+    write!(stdout, " E L I D E  ::  Easier Life @ IDE  :: v2.1.0 ")?;
     stdout.execute(ResetColor)?;
     Ok(())
 }
@@ -429,7 +447,6 @@ fn draw_editor(stdout: &mut Stdout, state: &AppState, layout: &Layout) -> Result
                 .take(layout.edit_pane_w)
                 .collect();
             
-            // Clean relaxing line numbers mapping
             stdout.execute(SetForegroundColor(colors::Palette::COMMENT_GRAY))?;
             write!(stdout, "{:3} ", row + 1)?;
             set_border_color(stdout)?;
@@ -491,13 +508,13 @@ fn draw_lsp_pane(stdout: &mut Stdout, state: &mut AppState, layout: &Layout) -> 
     let debug_x = divider_x + 1;
     
     stdout.execute(cursor::MoveTo(debug_x + 1, 1))?;
-    stdout.execute(SetForegroundColor(colors::Palette::HINT_ICE_BLUE))?;
+    stdout.execute(SetForegroundColor(colors::Palette::HINT_TEAL))?;
     write!(stdout, "LSP Workspace")?;
     stdout.execute(ResetColor)?;
 
     if state.current_diagnostics.is_empty() {
         stdout.execute(cursor::MoveTo(debug_x + 1, 3))?;
-        stdout.execute(SetForegroundColor(colors::Palette::SUCCESS_LIME))?;
+        stdout.execute(SetForegroundColor(colors::Palette::SUCCESS_GREEN))?;
         write!(stdout, "Nominal")?;
         stdout.execute(ResetColor)?;
     } else {
@@ -652,13 +669,11 @@ fn draw_command_palette(stdout: &mut Stdout, state: &AppState, layout: &Layout) 
 
 fn sync_cursor(stdout: &mut Stdout, state: &AppState, layout: &Layout) -> Result<()> {
     if state.palette.is_active {
-        let prompt_len = 3; // " : " length
+        let prompt_len = 3; 
         stdout.execute(cursor::MoveTo((2 + prompt_len + state.palette.input_buffer.len()) as u16, layout.term_height.saturating_sub(1)))?;
     } else {
         let screen_row = (state.editor.cursor.row.saturating_sub(state.editor.row_offset) + layout.banner_height) as u16;
         let visual_col = state.editor.visual_cursor_col().saturating_sub(state.editor.col_offset);
-        
-        // Left offset is x=2 padding + 6 chars for line numbers
         let screen_col = (visual_col + 8).min(layout.codespace_width.saturating_sub(2)) as u16;
         
         if (screen_row as usize) < (layout.banner_height + layout.editor_height) {
@@ -690,6 +705,7 @@ async fn main() -> Result<()> {
                 let mut lines = vec![
                     format!(" Workspace: {}", canonical_dir.display()),
                     " ──────────────────────────────────────────".to_string(),
+                    " ../".to_string(), // Ensure parent directory navigation is available
                 ];
 
                 let mut sorted_entries: Vec<String> = entries
@@ -730,36 +746,8 @@ async fn main() -> Result<()> {
             "rust" => Some("rust-analyzer"),
             "cpp" | "c" => Some("clangd"),
             "go" => Some("gopls"),
-            "zig" => Some("zls"),
-            "ada" => Some("ada_language_server"),
-            "swift" => Some("sourcekit-lsp"),
-            "nim" => Some("nimlsp"),
-            "java" => Some("jdtls"),
-            "csharp" | "cs" => Some("csharp-ls"), 
-            "kotlin" => Some("kotlin-language-server"),
-            "scala" => Some("metals"),
             "python" => Some("pyright"),
             "typescript" | "javascript" => Some("typescript-language-server --stdio"),
-            "html" => Some("vscode-html-language-server --stdio"),
-            "css" | "scss" | "less" => Some("vscode-css-language-server --stdio"),
-            "php" => Some("intelephense --stdio"),
-            "ruby" => Some("solargraph stdio"),
-            "lua" => Some("lua-language-server"),
-            "bash" | "sh" | "shell" => Some("bash-language-server start"),
-            "dart" => Some("dart language-server"),
-            "svelte" => Some("svelteserver --stdio"),
-            "vue" => Some("vls"),
-            "haskell" => Some("haskell-language-server-wrapper --lsp"),
-            "ocaml" => Some("ocamllsp"),
-            "elixir" => Some("elixir-ls"),
-            "erlang" => Some("erlang_ls"),
-            "json" => Some("vscode-json-language-server --stdio"),
-            "yaml" | "yml" => Some("yaml-language-server --stdio"),
-            "toml" => Some("taplo lsp stdio"),
-            "markdown" | "md" => Some("marksman"),
-            "latex" | "tex" => Some("texlab"),
-            "dockerfile" | "docker" => Some("docker-langserver --stdio"),
-            "sql" => Some("sqls"),
             _ => None,
         };
 
@@ -791,8 +779,12 @@ async fn main() -> Result<()> {
             needs_redraw = true;
         }
 
-        let layout = Layout::compute(&state)?;
-        state.editor.scroll_into_view(layout.edit_pane_w, layout.editor_height);
+        if needs_redraw {
+            let layout = Layout::compute(&state)?;
+            state.editor.scroll_into_view(layout.edit_pane_w, layout.editor_height);
+            render_ui(&mut stdout, &mut state, &layout)?;
+            needs_redraw = false;
+        }
 
         match terminal::poll_event(Duration::from_millis(16))? {
             InputEvent::Key(key) => {
@@ -818,7 +810,7 @@ async fn main() -> Result<()> {
                 } else if state.show_lsp_pane {
                     state.lsp_scroll_offset = state.lsp_scroll_offset.saturating_add(3);
                 } else {
-                    state.editor.move_cursor(3, 0);
+                 state.editor.move_cursor(3, 0);
                 }
             }
             InputEvent::Resize => {
@@ -826,12 +818,7 @@ async fn main() -> Result<()> {
             }
             InputEvent::Tick => {}
         }
-
-        if needs_redraw {
-            render_ui(&mut stdout, &mut state, &layout)?;
-            needs_redraw = false;
-        }
     }
-
+    
     Ok(())
 }
