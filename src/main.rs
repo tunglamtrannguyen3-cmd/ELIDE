@@ -8,7 +8,7 @@ mod process;
 mod colors;
 mod tracer;
 mod lsp_writer;
-
+mod ai;
 use anyhow::Result;
 use crossterm::{
     cursor,

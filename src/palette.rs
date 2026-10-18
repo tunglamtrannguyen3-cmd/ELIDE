@@ -21,6 +21,7 @@ pub enum PaletteAction {
     Acel(String),
     Copy(Option<String>),
     Paste,
+    AiCheck(String), // Handles both 'check <token> <url>' and 'check <query>'
 }
 
 pub struct Palette {
@@ -80,6 +81,9 @@ impl Palette {
             PaletteAction::RunBash(raw_bash)
         } else if trimmed.starts_with("acel ") {
             PaletteAction::Acel(Self::extract_arg(trimmed, "acel "))
+        } else if trimmed.starts_with("check ") {
+            let args = trimmed[6..].trim().to_string();
+            PaletteAction::AiCheck(args)
         } else {
             PaletteAction::UnknownCommand(trimmed.to_string())
         }
@@ -160,17 +164,17 @@ impl Palette {
                     ███████╗███████╗██║██████╔╝███████╗\n\
                     ╚══════╝╚══════╝╚═╝╚═════╝ ╚══════╝\n\
                     ℹ️ [ABOUT AUTHOR]\n\
-                     • Author        : Eggchese\n\
-                     • Email         : (tunglamtrannguyen3@gmail.com)\n\
-                     • Favorite Idol : Yatsuzume, All Minecraft Manhunt Speedruners\n\
-                     • Skills        : Systems Programming, Rust, C, Ada, Micro-skills, Cooking, Chess, Touhou on Lunatic\n\
+- Author        : Eggchese\n\
+- Email         : (tunglamtrannguyen3@gmail.com)\n\
+- Favorite Idol : Yatsuzume, All Minecraft Manhunt Speedruners\n\
+- Skills        : Systems Programming, Rust, C, Ada, Micro-skills, Cooking, Chess, Touhou on Lunatic\n\
                      -----------------------------------\n\
                      ℹ️ [EDITOR INFO]\n\
-                     • Version       : v2.1.1\n\
-                     • Target File   : {}\n\
-                     • Total Lines   : {}\n\
-                     • Cursor Pos    : Row {}, Col {}\n\
-                     • Target OS/Arch: {} / {}",
+- Version       : v2.1.1\n\
+- Target File   : {}\n\
+- Total Lines   : {}\n\
+- Cursor Pos    : Row {}, Col {}\n\
+- Target OS/Arch: {} / {}",
                     editor.filename.as_deref().unwrap_or("[Untitled]"),
                     editor.lines.len(),
                     editor.cursor.row + 1,
@@ -182,11 +186,12 @@ impl Palette {
             }
             PaletteAction::Help => (
                 "📖 [ELIDE COMMAND PALETTE MANUAL]\n\
-                 • Flags: -s (Save), -i (Info), copy [a-b] / paste, -bro! (Vent)\n\
-                 • File Cmds: new <file>, code <file>, switch <file>\n\
-                 • Foreground Process & Verification: acel <cmd> \n\
-                 • Advanced: :funcs (Line functions)\n\
-                 • LSP and Bash: lsp <cmd>, sh <cmd>"
+- Flags: -s (Save), -i (Info), copy [a-b] / paste, -bro! (Vent)\n\
+- File Cmds: new <file>, code <file>, switch <file>\n\
+- AI Audit & Config: check <token> <url> OR check <query>\n\
+- Foreground Process: acel <cmd>\n\
+- Advanced: :funcs (Line functions)\n\
+- LSP and Bash: lsp <cmd>, sh <cmd>"
                     .to_string(),
                 true,
             ),
@@ -269,7 +274,7 @@ impl Palette {
                     format!(
                         "🎲 [RANDOM BREAK GENERATOR]\n\n\
                          Time to step away from the keyboard. Your assigned activity:\n\n\
-                         • {}\n\n\
+                         - {}\n\n\
                          Close the terminal, go clear your head, and come back fresh!",
                         chosen
                     ),
@@ -325,6 +330,17 @@ impl Palette {
                     match process::run_interactive_cmd(&cmd).await {
                         Ok(_) => (format!("Returned from acel: {}", cmd), true),
                         Err(e) => (format!("Failed to launch acel app: {}", e), false),
+                    }
+                }
+            }
+            PaletteAction::AiCheck(query) => {
+                if query.is_empty() {
+                    ("Error: Specify a query or use 'check <token> <url>'".to_string(), false)
+                } else {
+                    let root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                    match crate::ai::run_check(&root, &query).await {
+                        Ok(res) => (format!("🤖 [ELIDE AI AUDIT]\n\n{}", res), true),
+                        Err(e) => (format!("❌ AI Error: {}", e), false),
                     }
                 }
             }
