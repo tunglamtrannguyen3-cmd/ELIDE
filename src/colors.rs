@@ -1,9 +1,11 @@
+// src/colors.rs
 use crossterm::style::{Attribute, Color};
 
+/// Color palette based on the relaxing Catppuccin pastel theme.
 pub struct Palette;
 
 impl Palette {
-    // Relaxing Catppuccin-style pastels
+    // Syntax highlighting colors
     pub const KEYWORD_MAUVE: Color = Color::Rgb { r: 203, g: 166, b: 247 };
     pub const TYPE_YELLOW: Color = Color::Rgb { r: 249, g: 226, b: 175 };
     pub const NUMBER_PEACH: Color = Color::Rgb { r: 250, g: 179, b: 135 };
@@ -13,7 +15,7 @@ impl Palette {
     pub const COMMENT_GRAY: Color = Color::Rgb { r: 147, g: 153, b: 178 };
     pub const UI_BORDER: Color = Color::Rgb { r: 88, g: 91, b: 112 };
     
-    // Status colors for LSP and Terminal
+    // Status colors for LSP and Terminal UI
     pub const SUCCESS_GREEN: Color = Color::Rgb { r: 166, g: 227, b: 161 };
     pub const ERROR_RED: Color = Color::Rgb { r: 243, g: 139, b: 168 };
     pub const WARNING_YELLOW: Color = Color::Rgb { r: 250, g: 227, b: 176 };
@@ -21,7 +23,7 @@ impl Palette {
     pub const UNKNOWN_FLAMINGO: Color = Color::Rgb { r: 242, g: 205, b: 205 };
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
     Success,
     Error,

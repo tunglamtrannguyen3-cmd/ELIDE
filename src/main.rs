@@ -135,24 +135,6 @@ impl AppState {
             KeyCode::Enter => {
                 self.term_scroll_y = 0;
                 self.term_scroll_x = 0;
-                
-                let input = self.palette.input_buffer.trim().to_string();
-                
-                // Intercept custom editor commands
-                if input == "\"+y" {
-                    self.clipboard = self.editor.lines.join("\n");
-                    self.command_history.push(("File copied to internal clipboard".to_string(), true));
-                    self.palette.input_buffer.clear();
-                    return;
-                } else if input == "\"+p" {
-                    let clip_lines: Vec<String> = self.clipboard.lines().map(|s| s.to_string()).collect();
-                    if !clip_lines.is_empty() {
-                        self.editor.lines = clip_lines;
-                        self.command_history.push(("Pasted from internal clipboard".to_string(), true));
-                    }
-                    self.palette.input_buffer.clear();
-                    return;
-                }
 
                 let action = self.palette.parse_command(self.editor.filename.as_deref());
                 let lsp_start_cmd = match &action {
@@ -160,7 +142,7 @@ impl AppState {
                     _ => None,
                 };
 
-                let (msg, success) = self.palette.execute_action(action, &mut self.editor).await;
+                let (msg, success) = self.palette.execute_action(action, &mut self.editor, &mut self.clipboard).await;
                 
                 if let Some(cmd) = lsp_start_cmd {
                     let curr_dir = std::env::current_dir().unwrap_or_default().to_string_lossy().to_string();
@@ -427,7 +409,7 @@ fn render_ui(stdout: &mut Stdout, state: &mut AppState, layout: &Layout) -> Resu
 fn draw_banner(stdout: &mut Stdout, _layout: &Layout) -> Result<()> {
     stdout.execute(cursor::MoveTo(2, 0))?;
     stdout.execute(SetForegroundColor(colors::Palette::FUNCTION_BLUE))?; 
-    write!(stdout, " E L I D E  ::  Easier Life @ IDE  :: v2.1.0 ")?;
+    write!(stdout, " Your shortcut to an Easier Life")?;
     stdout.execute(ResetColor)?;
     Ok(())
 }
@@ -740,32 +722,8 @@ async fn main() -> Result<()> {
         }
     }
 
-    let workspace_dir = std::env::current_dir().unwrap_or_default().to_string_lossy().to_string();
-    if let Some(detected_lang) = lsp::detect_workspace_language(&workspace_dir) {
-        let default_lsp = match detected_lang {
-            "rust" => Some("rust-analyzer"),
-            "cpp" | "c" => Some("clangd"),
-            "go" => Some("gopls"),
-            "python" => Some("pyright"),
-            "typescript" | "javascript" => Some("typescript-language-server --stdio"),
-            _ => None,
-        };
-
-        if let Some(lsp_cmd) = default_lsp {
-            match state.lsp_client.init_workspace(lsp_cmd, detected_lang, &workspace_dir, diag_tx.clone()).await {
-                Ok(_) => {
-                    state.show_lsp_pane = true;
-                    if let Some(ref fname) = state.editor.filename {
-                        let text = state.editor.lines.join("\n");
-                        let _ = state.lsp_client.open_file(fname, &text);
-                    }
-                }
-                Err(e) => {
-                    tracer.log_event(&format!("Auto-LSP Boot Failed: {}", e));
-                }
-            }
-        }
-    }
+    // [NOTE]: Automatic LSP startup block has been removed completely. 
+    // You can now activate your LSP manually via the command palette using `lsp <cmd>` (e.g., `lsp rust-analyzer`).
 
     let mut needs_redraw = true;
 

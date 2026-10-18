@@ -1,6 +1,6 @@
 [package]
 name = "elide"
-version = "2.0.5"
+version = "2.1.1"
 edition = "2021"
 description = "I'mma beat Doom."
 license = "MIT"

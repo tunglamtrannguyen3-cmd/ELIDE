@@ -5,7 +5,6 @@ use crate::process;
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum PaletteAction {
     Save,
-    Debug,
     Info,
     Help,
     Bro,
@@ -20,6 +19,8 @@ pub enum PaletteAction {
     Switch(String),
     SetLsp(String),
     Acel(String),
+    Copy(Option<String>),
+    Paste,
 }
 
 pub struct Palette {
@@ -51,15 +52,20 @@ impl Palette {
 
         match trimmed {
             "-s" | "--save" | "save" | ":w" => return PaletteAction::Save,
-            "-d" | "--debug" | "debug" | ":verify" => return PaletteAction::Debug,
             "-i" | "--info" | "info" => return PaletteAction::Info,
             "-h" | "-?" | "--help" | "help" | "?" => return PaletteAction::Help,
             "-bro!" | "bro" | "bro!" => return PaletteAction::Bro,
             ":funcs" => return PaletteAction::Funcs,
+            "copy" | "\"+y" => return PaletteAction::Copy(None),
+            "paste" | "\"+p" => return PaletteAction::Paste,
             _ => {}
         }
 
-        if trimmed.starts_with("--im-") {
+        if trimmed.starts_with("copy ") {
+            PaletteAction::Copy(Some(Self::extract_arg(trimmed, "copy ")))
+        } else if trimmed.starts_with("\"+y ") {
+            PaletteAction::Copy(Some(Self::extract_arg(trimmed, "\"+y ")))
+        } else if trimmed.starts_with("--im-") {
             PaletteAction::Joke(trimmed.to_string())
         } else if trimmed.starts_with("new ") {
             PaletteAction::New(Self::extract_arg(trimmed, "new "))
@@ -83,6 +89,7 @@ impl Palette {
         &mut self,
         action: PaletteAction,
         editor: &mut Editor,
+        clipboard: &mut String,
     ) -> (String, bool) {
         self.input_buffer.clear();
 
@@ -91,46 +98,57 @@ impl Palette {
                 Ok(msg) => (msg, true),
                 Err(e) => (format!("Save Error: {}", e), false),
             },
-            PaletteAction::Debug => {
-                let fname = editor.filename.as_deref().unwrap_or("");
-                
-                // Route to language-specific formal verification or syntax checkers
-                let cmd = if fname.ends_with(".rs") || fname.is_empty() {
-                    "cargo check".to_string() 
-                } else if fname.ends_with(".adb") || fname.ends_with(".ads") {
-                    "gnatprove --mode=prove".to_string() // SPARK verification for Ada
-                } else if fname.ends_with(".c") || fname.ends_with(".cpp") || fname.ends_with(".h") {
-                    "cppcheck --enable=all .".to_string() // Static analysis for C/C++
-                } else if fname.ends_with(".go") {
-                    "go vet ./...".to_string() // Standard Go static analysis
-                } else if fname.ends_with(".py") {
-                    format!("mypy {}", fname) // Type checking for Python
-                } else if fname.ends_with(".ts") {
-                    format!("tsc --noEmit {}", fname) // TypeScript verification
-                } else if fname.ends_with(".js") {
-                    format!("eslint {}", fname) // JavaScript linting
-                } else if fname.ends_with(".sh") || fname.ends_with(".bash") {
-                    format!("shellcheck {}", fname) // Shell script analysis
-                } else if fname.ends_with(".java") {
-                    format!("javac -Xlint:all {}", fname) // Java linting
-                } else if fname.ends_with(".zig") {
-                    format!("zig ast-check {}", fname) // Zig syntax check
-                } else if fname.ends_with(".rb") {
-                    format!("rubocop {}", fname) // Ruby static code analyzer
+            PaletteAction::Copy(range_opt) => {
+                match range_opt {
+                    None => {
+                        *clipboard = editor.lines.join("\n");
+                        ("File copied to internal clipboard (all lines)".to_string(), true)
+                    }
+                    Some(range_str) => {
+                        let range_str = range_str.trim();
+                        if range_str.is_empty() {
+                            *clipboard = editor.lines.join("\n");
+                            return ("File copied to internal clipboard (all lines)".to_string(), true);
+                        }
+
+                        let parts: Vec<&str> = range_str.split('-').collect();
+                        if parts.len() == 2 {
+                            if let (Ok(start), Ok(end)) = (parts[0].trim().parse::<usize>(), parts[1].trim().parse::<usize>()) {
+                                if editor.lines.is_empty() {
+                                    ("Editor buffer is empty.".to_string(), false)
+                                } else if start == 0 || end == 0 {
+                                    ("Error: Line numbers start at 1 (no line 0).".to_string(), false)
+                                } else if start > editor.lines.len() || end > editor.lines.len() {
+                                    (format!("Error: Line range out of bounds (file has only {} lines).", editor.lines.len()), false)
+                                } else {
+                                    let start_idx = start - 1;
+                                    let end_idx = end - 1;
+                                    if start_idx <= end_idx {
+                                        let sliced: Vec<String> = editor.lines[start_idx..=end_idx].to_vec();
+                                        *clipboard = sliced.join("\n");
+                                        (format!("Copied lines {}-{} to internal clipboard", start, end), true)
+                                    } else {
+                                        ("Error: Start line cannot be greater than end line.".to_string(), false)
+                                    }
+                                }
+                            } else {
+                                ("Error: Invalid line numbers. Use format a-b (e.g. copy 1-5)".to_string(), false)
+                            }
+                        } else {
+                            ("Error: Invalid range format. Use format a-b (e.g. copy 1-5)".to_string(), false)
+                        }
+                    }
+                }
+            }
+            PaletteAction::Paste => {
+                let clip_lines: Vec<String> = clipboard.lines().map(|s| s.to_string()).collect();
+                if clip_lines.is_empty() {
+                    ("Clipboard is empty.".to_string(), false)
                 } else {
-                    "echo 'we don't support this file type'".to_string()
-                };
-                
-                match process::run_bash_cmd(&cmd).await {
-                    Ok(res) => {
-                        let out = if res.output.trim().is_empty() { 
-                            format!("Verification passed cleanly via `{}`.", cmd) 
-                        } else { 
-                            res.output 
-                        };
-                        (out, res.success)
-                    },
-                    Err(e) => (format!("Verify/Debug Error: {}", e), false),
+                    editor.lines = clip_lines;
+                    editor.cursor = Cursor { row: 0, col: 0 };
+                    editor.is_dirty = true;
+                    ("Pasted from internal clipboard".to_string(), true)
                 }
             }
             PaletteAction::Info => {
@@ -148,7 +166,7 @@ impl Palette {
                      • Skills        : Systems Programming, Rust, C, Ada, Micro-skills, Cooking, Chess, Touhou on Lunatic\n\
                      -----------------------------------\n\
                      ℹ️ [EDITOR INFO]\n\
-                     • Version       : v2.1.0\n\
+                     • Version       : v2.1.1\n\
                      • Target File   : {}\n\
                      • Total Lines   : {}\n\
                      • Cursor Pos    : Row {}, Col {}\n\
@@ -164,10 +182,10 @@ impl Palette {
             }
             PaletteAction::Help => (
                 "📖 [ELIDE COMMAND PALETTE MANUAL]\n\
-                 • Flags: -s (Save), -d/:verify (Check/Debug), -i (Info), -bro! (Vent)\n\
+                 • Flags: -s (Save), -i (Info), copy [a-b] / paste, -bro! (Vent)\n\
                  • File Cmds: new <file>, code <file>, switch <file>\n\
-                 • Foreground Process: acel <cmd> \n\
-                 • Advanced: :funcs (List functions)\n\
+                 • Foreground Process & Verification: acel <cmd> \n\
+                 • Advanced: :funcs (Line functions)\n\
                  • LSP and Bash: lsp <cmd>, sh <cmd>"
                     .to_string(),
                 true,
@@ -186,14 +204,45 @@ impl Palette {
                 }
             }
             PaletteAction::Joke(joke) => {
-                let msg = match joke.as_str() {
-                    "--im-stuck" => "Have you tried turning it off and on again? Or maybe read the docs... jk, just ask ChatGPT.",
-                    "--im-bored" => "Type -bro! for a game recommendation, or rewrite this editor in Brainfuck.",
-                    "--im-hungry" => "Go eat! Your code won't compile better on an empty stomach.",
-                    "--im-tired" => "Git commit, git push, go to bed. The bug will be there tomorrow.",
-                    _ => "I am an editor, not a therapist. But you got this!",
+                let responses = match joke.as_str() {
+                    "--im-stuck" => vec![
+                        "Have you tried turning it off and on again? Or maybe read the docs... jk, just ask ChatGPT.",
+                        "Rubber duck debugging time: explain your entire code line-by-line to an inanimate object.",
+                        "Take a 5-minute walk. Your subconscious will solve the bug while you breathe fresh air.",
+                        "Delete the whole function and rewrite it. Sometimes starting clean is faster than fixing spaghetti."
+                    ],
+                    "--im-bored" => vec![
+                        "Type -bro! for a game recommendation, or rewrite this editor in Brainfuck.",
+                        "Try optimizing your loops until your CPU starts screaming.",
+                        "Go refactor that one messy file you've been avoiding for three weeks.",
+                        "Challenge yourself to write a game in 10 lines of Bash."
+                    ],
+                    "--im-hungry" => vec![
+                        "Go eat! Your code won't compile better on an empty stomach.",
+                        "Instant ramen is calling your name. Go fuel up.",
+                        "Step away from the screen and grab some water and a snack.",
+                        "A well-fed programmer finds bugs twice as fast."
+                    ],
+                    "--im-tired" => vec![
+                        "Git commit, git push, go to bed. The bug will be there tomorrow.",
+                        "Sleep is the ultimate compiler optimization for your brain.",
+                        "Close your laptop. Nothing good gets coded past 2 AM.",
+                        "Rest now, conquer the segmentation fault tomorrow."
+                    ],
+                    _ => vec![
+                        "I am an editor, not a therapist. But you got this!",
+                        "Keep pushing forward, you're closer than you think.",
+                        "Every expert was once a beginner staring at a blank screen."
+                    ],
                 };
-                (format!("🤖 {}", msg), true)
+
+                let seed = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos() as usize;
+
+                let chosen = responses[seed % responses.len()];
+                (format!("🤖 {}", chosen), true)
             }
             PaletteAction::Bro => {
                 let games = [

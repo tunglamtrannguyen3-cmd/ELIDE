@@ -354,7 +354,7 @@ pub fn get_language_id(filename: &str) -> &'static str {
         "tex" | "latex" => "latex",
         "dockerfile" | "docker" => "dockerfile",
         "sql" => "sql",
-        "adb" | "ads" | "ada" | "gpr" => "ada", // Added .gpr support here
+        "adb" | "ads" | "ada" | "gpr" => "ada",
         "swift" => "swift",
         "nim" => "nim",
         "kt" | "kts" => "kotlin",
