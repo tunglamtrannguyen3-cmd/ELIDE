@@ -29,7 +29,7 @@ fn get_config() -> &'static Mutex<AiConfig> {
     AI_CONFIG.get_or_init(|| Mutex::new(AiConfig::new()))
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize, Clone)]
 struct ChatMessage {
     role: String,
     content: String,
