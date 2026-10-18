@@ -34,8 +34,8 @@ serde_json = "1.0.151"
 url = "2.5.8"
 
 # Native AI Repo Auditor Dependencies
-reqwest = { version = "0.12", features = ["json"] }
-ignore = "1.0"
+reqwest = { version = "0.13.5", features = ["json"] }
+ignore = "0.4"
 
 [profile.release]
 opt-level = 3
