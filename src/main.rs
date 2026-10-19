@@ -76,6 +76,12 @@ struct AppState {
     lsp_scroll_offset: usize,
     term_scroll_y: usize,
     term_scroll_x: usize,
+
+    // 🤖 New AI Chat Window State:
+    pub show_ai_chat: bool,
+    pub ai_input_buffer: String,
+    pub ai_messages: Vec<(String, String)>, // Stores (role, content) for multi-turn chat
+    pub ai_scroll_offset: usize,
 }
 
 impl AppState {
@@ -92,6 +98,12 @@ impl AppState {
             lsp_scroll_offset: 0,
             term_scroll_y: 0,
             term_scroll_x: 0,
+            
+            // 🤖 Initialize AI Chat State:
+            show_ai_chat: false,
+            ai_input_buffer: String::new(),
+            ai_messages: Vec::new(),
+            ai_scroll_offset: 0,
         }
     }
 
@@ -101,11 +113,17 @@ impl AppState {
         diag_tx: &mpsc::UnboundedSender<(String, Vec<diagnostics::Diagnostic>)>
     ) -> bool {
         if terminal::is_esc(&key) {
-            if self.palette.is_active {
+            if self.show_ai_chat {
+                self.show_ai_chat = false;
+            } else if self.palette.is_active {
                 self.palette.is_active = false;
             } else {
                 return false;
             }
+        } else if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) && key.code == KeyCode::Char('a') {
+            self.show_ai_chat = !self.show_ai_chat;
+        } else if self.show_ai_chat {
+            self.handle_ai_chat_input(key).await;
         } else if terminal::is_alt_t(&key) {
             self.palette.is_active = !self.palette.is_active;
         } else if terminal::is_alt_l(&key) {
@@ -120,6 +138,37 @@ impl AppState {
             self.handle_editor_input(key);
         }
         true
+    }
+
+    async fn handle_ai_chat_input(&mut self, key: crossterm::event::KeyEvent) {
+        match key.code {
+            KeyCode::Enter => {
+                let prompt = self.ai_input_buffer.trim().to_string();
+                self.ai_input_buffer.clear();
+                if !prompt.is_empty() {
+                    // Push user message to history
+                    self.ai_messages.push(("user".to_string(), prompt.clone()));
+                    
+                    let root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                    let messages = self.ai_messages.clone();
+                    
+                    // Call AI service with full history
+                    match crate::ai::run_chat_stream(&root, messages).await {
+                        Ok(response) => {
+                            self.ai_messages.push(("assistant".to_string(), response));
+                        }
+                        Err(e) => {
+                            self.ai_messages.push(("assistant".to_string(), format!("❌ AI Error: {}", e)));
+                        }
+                    }
+                }
+            }
+            KeyCode::Char(c) => self.ai_input_buffer.push(c),
+            KeyCode::Backspace => { self.ai_input_buffer.pop(); },
+            KeyCode::Up => self.ai_scroll_offset = self.ai_scroll_offset.saturating_add(1),
+            KeyCode::Down => self.ai_scroll_offset = self.ai_scroll_offset.saturating_sub(1),
+            _ => {}
+        }
     }
 
     async fn handle_terminal_input(
@@ -305,8 +354,8 @@ impl Layout {
         let status_height = 1;
         let palette_height = 1;
         
-        let term_pane_height = if state.palette.is_active {
-            ((term_height as usize) * 30) / 100
+        let term_pane_height = if state.palette.is_active || state.show_ai_chat {
+            ((term_height as usize) * 35) / 100 // Slightly larger pane for comfortable chatting
         } else {
             0
         };
@@ -751,6 +800,21 @@ async fn main() -> Result<()> {
                     break;
                 }
             }
+            // ✅ Integrated Paste event handler:
+            InputEvent::Paste(text) => {
+                needs_redraw = true;
+                if state.palette.is_active {
+                    state.palette.input_buffer.push_str(&text);
+                } else if state.editor.filename.is_some() {
+                    for c in text.chars() {
+                        if c == '\n' {
+                            state.editor.insert_newline();
+                        } else if c != '\r' {
+                            state.editor.insert_char(c);
+                        }
+                    }
+                }
+            }
             InputEvent::ScrollUp => {
                 needs_redraw = true;
                 if state.palette.is_active {
@@ -764,7 +828,7 @@ async fn main() -> Result<()> {
             InputEvent::ScrollDown => {
                 needs_redraw = true;
                 if state.palette.is_active {
-                    state.term_scroll_y = state.term_scroll_y.saturating_sub(3);
+                    state.term_scroll_y = state.term_scroll_y.saturating_add(3); // Fixed to saturating_add as discussed earlier
                 } else if state.show_lsp_pane {
                     state.lsp_scroll_offset = state.lsp_scroll_offset.saturating_add(3);
                 } else {

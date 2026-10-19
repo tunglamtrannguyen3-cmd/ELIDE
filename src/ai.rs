@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
+use anyhow::{Result, Context};
 
 pub struct AiConfig {
     pub api_key: String,
@@ -29,27 +30,30 @@ fn get_config() -> &'static Mutex<AiConfig> {
     AI_CONFIG.get_or_init(|| Mutex::new(AiConfig::new()))
 }
 
-#[derive(Serialize, Deserialize, Clone)]
-struct ChatMessage {
-    role: String,
-    content: String,
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ChatMessage {
+    pub role: String,
+    pub content: String,
 }
 
 #[derive(Serialize)]
-struct ChatRequest {
-    model: String,
-    messages: Vec<ChatMessage>,
-    temperature: f32,
+pub struct ChatRequest {
+    pub model: String,
+    pub messages: Vec<ChatMessage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream: Option<bool>,
 }
 
-#[derive(Deserialize)]
-struct ChatChoice {
-    message: ChatMessage,
+#[derive(Deserialize, Debug)]
+pub struct ChatChoice {
+    pub message: ChatMessage,
 }
 
-#[derive(Deserialize)]
-struct ChatResponse {
-    choices: Vec<ChatChoice>,
+#[derive(Deserialize, Debug)]
+pub struct ChatResponse {
+    pub choices: Vec<ChatChoice>,
 }
 
 /// Handles setting credentials via 'check <token> <url>' or auditing the repository via 'check <query>'
@@ -125,7 +129,8 @@ pub async fn run_check(workspace_root: &Path, input: &str) -> Result<String, Str
                 content: input.to_string(),
             },
         ],
-        temperature: 0.2,
+        temperature: Some(0.2),
+        stream: None,
     };
 
     let client = reqwest::Client::new();
@@ -155,4 +160,67 @@ pub async fn run_check(workspace_root: &Path, input: &str) -> Result<String, Str
         .first()
         .map(|c| c.message.content.clone())
         .ok_or_else(|| "Received empty response from AI model.".to_string())
+}
+
+/// Handles multi-turn chat sessions in the AI chat pane
+pub async fn run_chat_stream(root: &Path, history: Vec<(String, String)>) -> Result<String> {
+    let config = get_config().lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+
+    if config.api_key.is_empty() && !config.api_url.contains("localhost") {
+        anyhow::bail!("AI API Key is missing. Set AI_API_KEY or run 'check <token> <url>' first.");
+    }
+
+    let mut messages = vec![
+        ChatMessage {
+            role: "system".to_string(),
+            content: format!(
+                "You are ELIDE AI, an expert systems programming assistant integrated into the ELIDE text editor. \
+                The current workspace root is: {}. Help the user write, debug, and understand code.",
+                root.display()
+            ),
+        }
+    ];
+
+    // Append full multi-turn conversation history
+    for (role, content) in history {
+        messages.push(ChatMessage { role, content });
+    }
+
+    let payload = ChatRequest {
+        model: config.model.clone(),
+        messages,
+        temperature: Some(0.7),
+        stream: Some(false),
+    };
+
+    let client = reqwest::Client::new();
+    let mut req = client.post(&config.api_url).json(&payload);
+
+    if !config.api_key.is_empty() {
+        req = req.bearer_auth(&config.api_key);
+    }
+
+    let res = req
+        .send()
+        .await
+        .context("Failed to connect to AI API endpoint")?;
+
+    if !res.status().is_success() {
+        let status = res.status();
+        let err_text = res.text().await.unwrap_or_default();
+        anyhow::bail!("API Error ({}): {}", status, err_text);
+    }
+
+    let chat_res: ChatResponse = res
+        .json()
+        .await
+        .context("Failed to parse AI response JSON")?;
+
+    let reply = chat_res
+        .choices
+        .first()
+        .map(|c| c.message.content.clone())
+        .unwrap_or_else(|| "No response generated.".to_string());
+
+    Ok(reply)
 }

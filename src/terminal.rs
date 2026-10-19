@@ -1,6 +1,10 @@
+// src/terminal.rs
 use anyhow::Result;
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEvent, KeyModifiers, MouseEventKind, EnableMouseCapture, DisableMouseCapture},
+    event::{
+        self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste,
+        EnableMouseCapture, Event, KeyCode, KeyEvent, KeyModifiers, MouseEventKind,
+    },
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
 };
@@ -8,6 +12,7 @@ use std::{io::stdout, time::Duration};
 
 pub enum InputEvent {
     Key(crossterm::event::KeyEvent),
+    Paste(String),
     Resize,
     ScrollUp,
     ScrollDown,
@@ -20,13 +25,14 @@ impl TerminalGuard {
     pub fn init() -> Result<Self> {
         enable_raw_mode()?;
         stdout().execute(EnterAlternateScreen)?;
-        // Enable mouse events so we can detect scroll wheel input
         stdout().execute(EnableMouseCapture)?;
+        stdout().execute(EnableBracketedPaste)?;
         Ok(Self)
     }
 
     /// Call this right BEFORE spawning a foreground process (e.g., vim)
     pub fn suspend() -> Result<()> {
+        stdout().execute(DisableBracketedPaste)?;
         stdout().execute(DisableMouseCapture)?;
         stdout().execute(LeaveAlternateScreen)?;
         disable_raw_mode()?;
@@ -38,6 +44,7 @@ impl TerminalGuard {
         enable_raw_mode()?;
         stdout().execute(EnterAlternateScreen)?;
         stdout().execute(EnableMouseCapture)?;
+        stdout().execute(EnableBracketedPaste)?;
         Ok(())
     }
 }
@@ -53,6 +60,7 @@ pub fn poll_event(timeout: Duration) -> Result<InputEvent> {
     if event::poll(timeout)? {
         match event::read()? {
             Event::Key(key) => Ok(InputEvent::Key(key)),
+            Event::Paste(s) => Ok(InputEvent::Paste(s)),
             Event::Resize(_, _) => Ok(InputEvent::Resize),
             Event::Mouse(mouse) => match mouse.kind {
                 MouseEventKind::ScrollUp => Ok(InputEvent::ScrollUp),
