@@ -188,5 +188,5 @@ See [`LICENSE.md`](LICENSE.md) for full non-commercial and private deployment te
 ---
 
 <p align="center">
-  <i>© 2026 Tung Lam Tran Nguyen. Built with 🦀 Rust for a lighter, faster developer experience.</i>
+  <i>© 2026 Eggchese. Built with 🦀 Rust for a lighter, faster developer experience.</i>
 </p>
