@@ -1,192 +1,128 @@
-# ⚡ ELIDE
+
+# ⚡ ELIDE (v2.1.2)
 
 <p align="center">
   <img src="https://github.com/user-attachments/assets/46a16081-bff4-4e32-8506-5727a1076b5f" alt="ELIDE Duck Logo" width="300"/>
 </p>
 
-### A lightweight terminal IDE that doesn't need a 32-gigabyte RAM donor to open a text file.
+### A lightweight terminal IDE for developers who value their RAM and their sanity.
 
-ELIDE is a fast, Rust-based terminal IDE built around one indisputable truth:
-
+ELIDE is an ultra-fast, Rust-based terminal IDE built on one undeniable truth:
 > **Your editor should launch before you finish questioning your life choices, not after.**
 
-No Electron bloat. No telemetry harvesting your keystrokes. No subscription model for saving a file. Just **ELIDE.**
+No Electron bloat. No mysterious telemetry harvesting your keystrokes. No multi-gigabyte memory footprint. Just pure, unadulterated speed.
 
 ---
 
 # 🥊 ELIDE vs. The Competition
 
-Every editor has its place. Unfortunately, some of those places appear to be directly between your RAM and your will to live. 💀
-
-Let's talk about how the industry got here.
+Let's be honest about why the industry standard feels like running a physics simulation on a toaster:
 
 ### 🟦 VS Code — The Electron Memory Vampire
-**The Pitch:** *"It's extensible! You can customize everything!"*  
-**The Reality:** You install 47 extensions just to format a JSON file, your laptop fans start screaming like a jet engine preparing for takeoff, and your RAM usage begins climbing faster than rent prices in downtown Tokyo.  
-**ELIDE's Take:** If your text editor needs a substantial chunk of your computer's resources just to display `Hello World`, something has gone horribly, irreversibly wrong with civilization.
-
----
+* **The Pitch:** *"It's extensible! You can customize everything!"*[cite: 7]
+* **The Reality:** You install 47 extensions just to format a single JSON file, your laptop fans scream like a jet engine preparing for takeoff, and your RAM usage climbs faster than rent prices.
+* **ELIDE's Take:** If your text editor requires a 32GB RAM donor just to display `Hello World`, civilization has failed.
 
 ### 🟥 JetBrains — The Corporate Enterprise Monolith
-**The Pitch:** *"We index your entire codebase down to the atomic level!"*  
-**The Reality:** You open one `.rs` file and suddenly your IDE is indexing your project, your Git history, the known universe, and possibly your bloodline. Then your computer freezes.  
-**ELIDE's Take:** We didn't come here to build a micro-economy. We came here to edit a file.
+* **The Pitch:** *"We index your entire codebase down to the atomic level!"*[cite: 7]
+* **The Reality:** You open one `.rs` file and suddenly your IDE is indexing your project, your git history, the known universe, and your bloodline. Then your computer freezes.
+* **ELIDE's Take:** We didn't come here to build a micro-economy. We came here to edit a file.
+
+### 🟩 Helix & Neovim — The Modal Masochists
+* **The Pitch:** *"Infinite customizability and modal keybindings!"*[cite: 7]
+* **The Reality:** You press the wrong key while trying to delete a typo, and suddenly you're trapped in an alternate dimension writing a 5,000-line Lua config file.
+* **ELIDE's Take:** If configuring your editor takes longer than installing an OS, you don't have a tool. You have a second job.
 
 ---
 
-### 🟧 Android Studio — The Gradle Torture Chamber
-**The Pitch:** *"Everything you need for mobile development!"*  
-**The Reality:** You change one padding value and Android Studio responds with a 20-minute hostage situation called `BUILDING GRADLE...`  
-**ELIDE's Take:** *bro just compile the file*
+# ✨ Core Architecture & Features (v2.1.2)
 
----
-
-### 🟩 Helix — The Modal Masochism Club
-**The Pitch:** *"A modern editor with built-in tree-sitter and multi-selections!"*  
-**The Reality:** You press the wrong key while trying to delete a typo and suddenly you're learning an entirely new keyboard dialect. One wrong move later: `WHY IS MY CURSOR DOING THAT`  
-**ELIDE's Take:** Modal editing is not for everyone. Some people just want to type text without accidentally opening a portal to another dimension.
-
----
-
-### 🟪 Neovim — The Configuration Stockholmers
-**The Pitch:** *"It's infinitely extensible!"*  
-**The Reality:** You spend 84 consecutive hours on GitHub assembling a 5,000-line Lua configuration because your editor apparently needs a PhD before it can highlight a function. Then one plugin gets deprecated. Everything explodes.  
-**ELIDE's Take:** If configuring your editor takes longer than installing an operating system, you don't have a tool. You have a second job.
-
----
-
-# ✨ Core Features
-
-- ⚡ **Instant Startup:** Zero loading screens, zero Electron runtime overhead.
-- 💬 **Multi-Turn AI Chat (`Alt+A`):** Built-in workspace-aware AI assistant powered by DeepSeek/OpenAI.
-- 🛠️ **Command Palette & Terminal Pane (`Alt+T`):** Run background or foreground shell tasks directly inside the editor.
-- 🩺 **LSP Integration (`Alt+L`):** Real-time code diagnostics, errors, and hints for Rust, Python, TypeScript, C/C++, and more.
-- 📂 **Workspace Tree Navigator:** Easily switch directories, view workspace layouts, and manage buffers.
-- 🎨 **SOTA Catppuccin-Inspired Color System:** Relaxing, low-eyestrain, high-contrast palette.
+ELIDE's codebase is partitioned into modular, zero-warning Rust components:
+* **Terminal Guard & Event Polling**: Raw mode, alternate screen buffers, and bracketed paste mode are managed in `src/terminal.rs`[cite: 10].
+* **System-Wide Clipboard Integration**: Seamlessly copy lines or entire files (`copy [a-b]`) and paste via `arboard` bindings inside `src/palette.rs`[cite: 8].
+* **Conversational AI Co-Pilot (`Alt+A`)**: Multi-turn chat (`run_chat_stream`) and repository audits (`run_check`) with automatic HTTP connection pooling are implemented in `src/ai.rs`[cite: 1].
+* **LSP Workspace Diagnostics (`Alt+L`)**: Real-time language server protocol communication, initialization, and background diagnostic streaming run in `src/lsp.rs`[cite: 5], backed by an asynchronous pipe writer in `src/lsp_writer.rs`[cite: 6].
+* **Safe Buffer Engine**: Handles UTF-8 character-to-byte index mapping (`char_to_byte_idx`), visual terminal column width calculations for CJK/emojis, and POSIX trailing newlines in `src/editor.rs`[cite: 4].
+* **Low-Noise Theme System**: SOTA Catppuccin-inspired syntax highlighting and status palettes are defined in `src/colors.rs`[cite: 2].
+* **Process Execution & Kernel Stats**: Run background shell commands with RSS memory tracking (`run_bash_cmd`) or surrender the terminal for interactive tasks (`run_interactive_cmd`) in `src/process.rs`[cite: 9].
 
 ---
 
 # ⌨️ Hotkeys & Keybindings
 
-| Hotkey | Action |
-| :--- | :--- |
-| `Alt + A` | Open / Close persistent AI Chat pane |
-| `Alt + T` | Open / Close Command Palette & Terminal pane |
-| `Alt + L` | Toggle LSP Diagnostics Pane |
-| `Alt + Up / Down` | Scroll LSP diagnostics window |
-| `Esc` | Close active pane / Return focus to code editor |
+| Hotkey | Action | Source Module |
+| :--- | :--- | :--- |
+| `Alt + A` | Open / Close persistent AI Chat pane[cite: 7] | `src/main.rs`[cite: 7] |
+| `Alt + T` | Open / Close Command Palette & Terminal pane[cite: 7] | `src/main.rs`[cite: 7] |
+| `Alt + L` | Toggle LSP Diagnostics Pane[cite: 7] | `src/main.rs`[cite: 7] |
+| `Alt + Up / Down` | Scroll LSP diagnostics window or terminal output[cite: 7] | `src/main.rs`[cite: 7] |
+| `Esc` | Close active pane / Return focus to code editor[cite: 7] | `src/main.rs`[cite: 7] |
 
 ---
 
-# ⚡ Command Palette Reference
+# ⚡ Savage Command Palette Reference
 
-Press `Alt + T` to activate the command palette and execute commands:
+Press `Alt + T` to summon the command palette[cite: 7]. Type a command or test ELIDE's patience[cite: 8]:
 
 | Command | Description |
 | :--- | :--- |
-| `code <file>` | Open or create a file buffer |
-| `switch <file>` | Switch active workspace file |
-| `save` / `:w` / `-s` | Save current file changes |
-| `lsp <cmd>` | Start an LSP server (e.g., `lsp rust-analyzer`) |
-| `check <query>` | Audit your codebase context with the AI engine |
-| `check <token> <url>` | Dynamically set AI API Key and endpoint URL |
-| `sh <cmd>` | Execute a system shell command |
-| `acel <cmd>` | Run foreground tasks or build scripts |
-| `debug` / `-d` | Start debugging with GDB |
-| `-bro!` / `bro` | Take a break (Random break generator) |
-
-*And yes, `acel` is intentionally spelled like that. No, we're not fixing it. It has character. 🗿*
+| `code <file>` | Open or create a file buffer[cite: 8] |
+| `switch <file>` | Switch active workspace file[cite: 8] |
+| `save` / `:w` / `-s` | Save current file changes to disk[cite: 4, 8] |
+| `copy [a-b]` / `paste` | Copy line ranges or sync directly with the OS system clipboard[cite: 8] |
+| `lsp <cmd>` | Launch an LSP server (e.g., `lsp rust-analyzer`)[cite: 5, 8] |
+| `check <query>` | Audit your full workspace codebase context with ELIDE AI[cite: 1, 8] |
+| `check <token> <url>` | Inject API credentials on the fly[cite: 1, 8] |
+| `sh <cmd>` | Execute shell commands with kernel resource stats[cite: 8, 9] |
+| `acel <cmd>` | Surrender the terminal to run interactive foreground tasks[cite: 8, 9] |
+| `-bro!` / `bro` | Take a mandatory break via the random activity generator[cite: 8] |
 
 ---
 
-# 🎨 SOTA Color Palette
-
-ELIDE uses a high-contrast, low-eyestrain color palette designed to look sleek without turning your terminal into a radioactive disco:
-
-- 🟢 **Success** — `137, 243, 54` — Clean operations
-- 🟡 **Warning** — `255, 215, 0` — Friendly alerts
-- 🔴 **Error** — `227, 83, 54` — Something went sideways
-- 🔵 **Hint** — `193, 213, 240` — Helpful context
-- ⚪ **Unknown** — `112, 128, 144` — Mysterious commands
-
----
-
-# 🧠 The ELIDE Philosophy
-
-1. ⚡ **Lightweight** — Don't make the editor heavier than the project you're building.
-2. 🖥️ **Terminal-native** — The terminal isn't a limitation; it's the optimal environment.
-3. 👀 **Low visual noise** — Your code should be the most interesting thing on screen.
-4. ⌨️ **Familiar commands** — Quick aliases keep your fingers on the keyboard.
-5. 🔧 **Tool-friendly** — ELIDE works with Unix tools instead of trying to replace everything.
-6. 🌱 **Take breaks** — Sometimes the correct debugging strategy is closing the terminal, going outside, and touching grass.
-
----
-
-# 📦 Installation & Setup
+# 📦 Installation & Strong Verification
 
 ### Prerequisites
-- [Rust & Cargo](https://www.rust-lang.org/tools/install) (1.70 or higher)
+* [Rust & Cargo](https://www.rust-lang.org/tools/install) (1.70 or higher)
 
-### Building from Source
+### Building & Verifying Locally
+ELIDE enforces strict static analysis to ensure bulletproof reliability:
 
 ```bash
 # Clone the repository
-git clone https://github.com/tunglamtrannguyen3-cmd/ELIDE.git
+git clone [https://github.com/tunglamtrannguyen3-cmd/ELIDE.git](https://github.com/tunglamtrannguyen3-cmd/ELIDE.git)
 cd ELIDE
 
-# Build in release mode
+# Add clippy for strict lint verification
+rustup component add clippy
+
+# Run zero-warning clippy check
+cargo clippy --all-targets -- -D warnings
+
+# Build in optimized release mode
 cargo build --release
 
-# Launch ELIDE
+# Run ELIDE
 ./target/release/elide
+
 ```
 
 ---
 
-# 🤖 Configuring AI Assistance
+# 🥚 Easter Eggs & Mental Health
 
-ELIDE includes a built-in AI assistant. You can configure credentials via environment variables or on-the-fly inside the editor:
-
-### Option 1: Environment Variables
-```bash
-export AI_API_KEY="your_api_key_here"
-export AI_API_URL="https://api.deepseek.com/v1/chat/completions" # Or OpenAI / Ollama endpoint
-export AI_MODEL="deepseek-coder"
-```
-
-### Option 2: On-the-Fly via Command Palette
-In ELIDE, press `Alt + T` and type:
-```text
-check <your_api_key> <your_api_url>
-```
-
----
-
-# 🥚 Easter Eggs
-
-Software doesn't have to be a joyless corporate product. Try typing:
+Software doesn't have to be a joyless corporate product. If you're questioning your life choices at 3 AM while debugging a segmentation fault, try typing:
 
 ```text
 -bro!
+
 ```
 
-And if you're completely lost:
-
-```text
-also pls help on my README.md
-```
-
-Because apparently even ELIDE needs emotional support sometimes. 💀
+Or use mood-adjuster commands: `--im-stuck`, `--im-bored`, `--im-broken`, or `--im-genius`.
 
 ---
 
 # 📄 License
 
-Distributed under the **Eggchese Open Project License 2026 (EOPL-2026.2)**.  
-See [`LICENSE.md`](LICENSE.md) for full non-commercial and private deployment terms.
+Distributed under the **Eggchese Open Project License 2026 (EOPL-2026.2)**. See [`LICENSE.md`](LICENSE.md) for details.
 
 ---
-
-<p align="center">
-  <i>© 2026 Eggchese. Built with 🦀 Rust for a lighter, faster developer experience.</i>
-</p>
