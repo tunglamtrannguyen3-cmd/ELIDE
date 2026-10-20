@@ -10,6 +10,8 @@ mod colors;
 mod tracer;
 mod lsp_writer;
 mod ai;
+mod clipboard;
+
 use anyhow::Result;
 use crossterm::{
     cursor,

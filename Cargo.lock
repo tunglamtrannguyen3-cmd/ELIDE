@@ -591,6 +591,7 @@ dependencies = [
  "anyhow",
  "arboard",
  "aya",
+ "base64 0.23.1",
  "crossterm",
  "ignore",
  "libc",

@@ -1,7 +1,7 @@
 // src/palette.rs
 use crate::editor::{Cursor, Editor};
 use crate::process;
-use arboard::Clipboard;
+use crate::clipboard::SystemClipboard;
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum PaletteAction {
@@ -147,22 +147,15 @@ impl Palette {
 
                 *clipboard = text_to_copy.clone();
 
-                match Clipboard::new() {
-                    Ok(mut sys_clip) => {
-                        if let Err(e) = sys_clip.set_text(&text_to_copy) {
-                            (format!("Copied internally, but failed OS clipboard: {}", e), false)
-                        } else {
-                            ("Copied to system clipboard!".to_string(), true)
-                        }
-                    }
-                    Err(_) => ("Copied to internal clipboard (System clipboard unavailable)".to_string(), true),
+                let mut clip_mgr = SystemClipboard::new();
+                match clip_mgr.set_text(&text_to_copy) {
+                    Ok(_) => ("Copied! (Synced to System Clipboard, OSC 52, & Internal Buffer)".to_string(), true),
+                    Err(e) => (format!("Copied internally, but clipboard sync warned: {}", e), false),
                 }
             }
             PaletteAction::Paste => {
-                let clip_text = match Clipboard::new() {
-                    Ok(mut sys_clip) => sys_clip.get_text().unwrap_or_else(|_| clipboard.clone()),
-                    Err(_) => clipboard.clone(),
-                };
+                let mut clip_mgr = SystemClipboard::new();
+                let clip_text = clip_mgr.get_text();
 
                 let clip_lines: Vec<String> = clip_text.lines().map(|s| s.to_string()).collect();
                 if clip_lines.is_empty() {
@@ -368,7 +361,7 @@ impl Palette {
             }
             PaletteAction::SetLsp(cmd) => {
                 if cmd.is_empty() {
-                    ("Error: Specify an LSP command (e.g., lsp rust-analyzer).".to_string(), false)
+                    ("What do you tryna check it with, air?.".to_string(), false)
                 } else {
                     (format!("Starting LSP: {}", cmd), true)
                 }
@@ -395,7 +388,7 @@ impl Palette {
                 }
             }
             PaletteAction::UnknownCommand(cmd) => {
-                (format!("tf is this {}", cmd), false)
+                (format!("tf is {}", cmd), false)
             }
             PaletteAction::Empty => (".Fym there's nothing".to_string(), true),
         }
