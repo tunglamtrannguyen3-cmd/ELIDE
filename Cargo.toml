@@ -3,7 +3,7 @@ name = "elide"
 version = "2.1.2"
 edition = "2021"
 description = "I'mma beat Doom."
-license = "License-Ref-EOPL-2026.1"
+license = "License-Ref-EOPL-2026.2"
 repository = "https://github.com/tunglamtrannguyen3-cmd/ELIDE"
 
 [dependencies]
