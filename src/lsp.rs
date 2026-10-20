@@ -127,54 +127,48 @@ impl LspClient {
 
         // --- STEP 4: Start background diagnostic listener ---
         tokio::spawn(async move {
-            loop {
-                match read_lsp_message(&mut reader).await {
-                    Ok(body) => {
-                        if let Ok(json) = serde_json::from_slice::<Value>(&body) {
-                            if json.get("method").and_then(|m| m.as_str()) == Some("textDocument/publishDiagnostics") {
-                                if let Some(uri) = json.pointer("/params/uri").and_then(|u| u.as_str()) {
+            while let Ok(body) = read_lsp_message(&mut reader).await {
+                if let Ok(json) = serde_json::from_slice::<Value>(&body) {
+                    if json.get("method").and_then(|m| m.as_str()) == Some("textDocument/publishDiagnostics") {
+                        if let Some(uri) = json.pointer("/params/uri").and_then(|u| u.as_str()) {
+                            
+                            // Extract path and filter by target language
+                            let path = uri.strip_prefix("file://").unwrap_or(uri);
+                            if get_language_id(path) != active_lang {
+                                continue; // Silently drop diagnostics for other languages
+                            }
+
+                            let file_uri = uri.to_string();
+
+                            if let Some(diags_array) = json.pointer("/params/diagnostics").and_then(|d| d.as_array()) {
+                                let parsed_diags: Vec<Diagnostic> = diags_array.iter().map(|d| {
+                                    let line = d.pointer("/range/start/line")
+                                        .and_then(|l| l.as_u64())
+                                        .unwrap_or(0) as usize + 1;
                                     
-                                    // Extract path and filter by target language
-                                    let path = uri.strip_prefix("file://").unwrap_or(uri);
-                                    if get_language_id(path) != active_lang {
-                                        continue; // Silently drop diagnostics for other languages
+                                    let message = d.get("message")
+                                        .and_then(|m| m.as_str())
+                                        .unwrap_or("Unknown error")
+                                        .to_string();
+                                        
+                                    let severity = d.get("severity")
+                                        .and_then(|s| s.as_u64())
+                                        .map(|n| n as u8);
+                                        
+                                    Diagnostic { 
+                                        line, 
+                                        message, 
+                                        severity 
                                     }
+                                }).collect();
 
-                                    let file_uri = uri.to_string();
-
-                                    if let Some(diags_array) = json.pointer("/params/diagnostics").and_then(|d| d.as_array()) {
-                                        let parsed_diags: Vec<Diagnostic> = diags_array.iter().map(|d| {
-                                            let line = d.pointer("/range/start/line")
-                                                .and_then(|l| l.as_u64())
-                                                .unwrap_or(0) as usize + 1;
-                                            
-                                            let message = d.get("message")
-                                                .and_then(|m| m.as_str())
-                                                .unwrap_or("Unknown error")
-                                                .to_string();
-                                                
-                                            let severity = d.get("severity")
-                                                .and_then(|s| s.as_u64())
-                                                .map(|n| n as u8);
-                                                
-                                            Diagnostic { 
-                                                line, 
-                                                message, 
-                                                severity 
-                                            }
-                                        }).collect();
-
-                                        let _ = diag_tx.send((file_uri, parsed_diags));
-                                    }
-                                }
+                                let _ = diag_tx.send((file_uri, parsed_diags));
                             }
                         }
                     }
-                    Err(_) => break, // Stream closed or malformed
                 }
             }
         });
-
         Ok(())
     }
 

@@ -30,10 +30,7 @@ impl Editor {
     }
 
     /// Helper to convert a character column index into a UTF-8 byte offset
-    // In src/editor.rs[cite: 4]
-
-    /// Helper to convert a character column index into a UTF-8 byte offset
-    pub fn char_to_byte_idx(s: &str, char_idx: usize) -> usize { // 👈 Add 'pub' here
+    pub fn char_to_byte_idx(s: &str, char_idx: usize) -> usize {
         s.char_indices()
             .nth(char_idx)
             .map(|(idx, _)| idx)

@@ -1,6 +1,6 @@
 [package]
 name = "elide"
-version = "2.1.1"
+version = "2.1.2"
 edition = "2021"
 description = "I'mma beat Doom."
 license = "License-Ref-EOPL-2026.1"
@@ -36,6 +36,9 @@ url = "2.5.8"
 # Native AI Repo Auditor Dependencies
 reqwest = { version = "0.13.5", features = ["json"] }
 ignore = "0.4"
+
+# Copy & Paste to clipboard
+arboard = "3.7.0"
 
 [profile.release]
 opt-level = 3

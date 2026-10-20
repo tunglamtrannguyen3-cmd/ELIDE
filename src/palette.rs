@@ -1,6 +1,7 @@
 // src/palette.rs
 use crate::editor::{Cursor, Editor};
 use crate::process;
+use arboard::Clipboard;
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum PaletteAction {
@@ -76,14 +77,12 @@ impl Palette {
             PaletteAction::Switch(Self::extract_arg(trimmed, "switch "))
         } else if trimmed.starts_with("lsp ") {
             PaletteAction::SetLsp(Self::extract_arg(trimmed, "lsp "))
-        } else if trimmed.starts_with("sh ") {
-            let raw_bash = trimmed[3..].trim().to_string();
-            PaletteAction::RunBash(raw_bash)
+        } else if let Some(stripped) = trimmed.strip_prefix("sh ") {
+            PaletteAction::RunBash(stripped.trim().to_string())
         } else if trimmed.starts_with("acel ") {
             PaletteAction::Acel(Self::extract_arg(trimmed, "acel "))
-        } else if trimmed.starts_with("check ") {
-            let args = trimmed[6..].trim().to_string();
-            PaletteAction::AiCheck(args)
+        } else if let Some(stripped) = trimmed.strip_prefix("check ") {
+            PaletteAction::AiCheck(stripped.trim().to_string())
         } else {
             PaletteAction::UnknownCommand(trimmed.to_string())
         }
@@ -103,96 +102,109 @@ impl Palette {
                 Err(e) => (format!("Save Error: {}", e), false),
             },
             PaletteAction::Copy(range_opt) => {
-                match range_opt {
-                    None => {
-                        *clipboard = editor.lines.join("\n");
-                        ("File copied to internal clipboard (all lines)".to_string(), true)
-                    }
+                let text_to_copy = match range_opt {
+                    None => editor.lines.join("\n"),
                     Some(range_str) => {
                         let range_str = range_str.trim();
                         if range_str.is_empty() {
-                            *clipboard = editor.lines.join("\n");
-                            return ("File copied to internal clipboard (all lines)".to_string(), true);
-                        }
-
-                        let parts: Vec<&str> = range_str.split('-').map(|s| s.trim()).collect();
-                        let (start, end) = if parts.len() == 1 {
-                            if let Ok(n) = parts[0].parse::<usize>() {
-                                (n, n)
-                            } else {
-                                return ("Error: Invalid line number.".to_string(), false);
-                            }
-                        } else if parts.len() == 2 {
-                            if let (Ok(s), Ok(e)) = (parts[0].parse::<usize>(), parts[1].parse::<usize>()) {
-                                (s, e)
-                            } else {
-                                return ("Error: Invalid line numbers. Use format a-b (e.g. copy 1-5)".to_string(), false);
-                            }
+                            editor.lines.join("\n")
                         } else {
-                            return ("Error: Invalid range format. Use format a-b or single line (e.g. copy 5)".to_string(), false);
-                        };
-
-                        if editor.lines.is_empty() {
-                            ("Editor buffer is empty.".to_string(), false)
-                        } else if start == 0 || end == 0 {
-                            ("Error: Line numbers start at 1 (no line 0).".to_string(), false)
-                        } else if start > editor.lines.len() || end > editor.lines.len() {
-                            (format!("Error: Line range out of bounds (file has only {} lines).", editor.lines.len()), false)
-                        } else {
-                            let start_idx = start - 1;
-                            let end_idx = end - 1;
-                            if start_idx <= end_idx {
-                                let sliced: Vec<String> = editor.lines[start_idx..=end_idx].to_vec();
-                                *clipboard = sliced.join("\n");
-                                (format!("Copied lines {}-{} to internal clipboard", start, end), true)
+                            let parts: Vec<&str> = range_str.split('-').map(|s| s.trim()).collect();
+                            let (start, end) = if parts.len() == 1 {
+                                if let Ok(n) = parts[0].parse::<usize>() {
+                                    (n, n)
+                                } else {
+                                    return ("Error: Invalid line number.".to_string(), false);
+                                }
+                            } else if parts.len() == 2 {
+                                if let (Ok(s), Ok(e)) = (parts[0].parse::<usize>(), parts[1].parse::<usize>()) {
+                                    (s, e)
+                                } else {
+                                    return ("Error: Invalid line numbers. Use format a-b (e.g. copy 1-5)".to_string(), false);
+                                }
                             } else {
-                                ("Error: Start line cannot be greater than end line.".to_string(), false)
+                                return ("Error: Invalid range format. Use format a-b or single line (e.g. copy 5)".to_string(), false);
+                            };
+
+                            if editor.lines.is_empty() {
+                                return ("Editor buffer is empty.".to_string(), false);
+                            } else if start == 0 || end == 0 {
+                                return ("Error: Line numbers start at 1 (no line 0).".to_string(), false);
+                            } else if start > editor.lines.len() || end > editor.lines.len() {
+                                return (format!("Error: Line range out of bounds (file has only {} lines).", editor.lines.len()), false);
+                            } else {
+                                let start_idx = start - 1;
+                                let end_idx = end - 1;
+                                if start_idx <= end_idx {
+                                    editor.lines[start_idx..=end_idx].join("\n")
+                                } else {
+                                    return ("Error: Start line cannot be greater than end line.".to_string(), false);
+                                }
                             }
                         }
                     }
+                };
+
+                *clipboard = text_to_copy.clone();
+
+                match Clipboard::new() {
+                    Ok(mut sys_clip) => {
+                        if let Err(e) = sys_clip.set_text(&text_to_copy) {
+                            (format!("Copied internally, but failed OS clipboard: {}", e), false)
+                        } else {
+                            ("Copied to system clipboard!".to_string(), true)
+                        }
+                    }
+                    Err(_) => ("Copied to internal clipboard (System clipboard unavailable)".to_string(), true),
                 }
             }
-           PaletteAction::Paste => {
-    let clip_lines: Vec<String> = clipboard.lines().map(|s| s.to_string()).collect();
-    if clip_lines.is_empty() {
-        ("Clipboard is empty.".to_string(), false)
-    } else {
-        let row = editor.cursor.row.min(editor.lines.len());
-        if row < editor.lines.len() {
-            let current_line = &mut editor.lines[row];
-            let byte_idx = Editor::char_to_byte_idx(current_line, editor.cursor.col);
-            let remainder = current_line.split_off(byte_idx);
-            
-            if clip_lines.len() == 1 {
-                current_line.push_str(&clip_lines[0]);
-                current_line.push_str(&remainder);
-                editor.cursor.col += clip_lines[0].chars().count();
-            } else {
-                let first_pasted = clip_lines[0].clone();
-                let last_pasted = clip_lines.last().unwrap().clone();
-                
-                current_line.push_str(&first_pasted);
-                
-                let mut new_lines = vec![current_line.clone()];
-                for middle_line in &clip_lines[1..clip_lines.len() - 1] {
-                    new_lines.push(middle_line.clone());
+            PaletteAction::Paste => {
+                let clip_text = match Clipboard::new() {
+                    Ok(mut sys_clip) => sys_clip.get_text().unwrap_or_else(|_| clipboard.clone()),
+                    Err(_) => clipboard.clone(),
+                };
+
+                let clip_lines: Vec<String> = clip_text.lines().map(|s| s.to_string()).collect();
+                if clip_lines.is_empty() {
+                    ("Clipboard is empty.".to_string(), false)
+                } else {
+                    let row = editor.cursor.row.min(editor.lines.len());
+                    if row < editor.lines.len() {
+                        let current_line = &mut editor.lines[row];
+                        let byte_idx = Editor::char_to_byte_idx(current_line, editor.cursor.col);
+                        let remainder = current_line.split_off(byte_idx);
+                        
+                        if clip_lines.len() == 1 {
+                            current_line.push_str(&clip_lines[0]);
+                            current_line.push_str(&remainder);
+                            editor.cursor.col += clip_lines[0].chars().count();
+                        } else {
+                            let first_pasted = clip_lines[0].clone();
+                            let last_pasted = clip_lines.last().unwrap().clone();
+                            
+                            current_line.push_str(&first_pasted);
+                            
+                            let mut new_lines = vec![current_line.clone()];
+                            for middle_line in &clip_lines[1..clip_lines.len() - 1] {
+                                new_lines.push(middle_line.clone());
+                            }
+                            
+                            let mut final_line = last_pasted.clone();
+                            let last_pasted_len = last_pasted.chars().count();
+                            final_line.push_str(&remainder);
+                            new_lines.push(final_line);
+                            
+                            editor.lines.splice(row..=row, new_lines);
+                            editor.cursor.row += clip_lines.len() - 1;
+                            editor.cursor.col = last_pasted_len;
+                        }
+                    } else {
+                        editor.lines.extend(clip_lines);
+                    }
+                    editor.is_dirty = true;
+                    ("Pasted from system clipboard at cursor".to_string(), true)
                 }
-                
-                let mut final_line = last_pasted.clone(); // ✅ Added .clone() here
-                final_line.push_str(&remainder);
-                new_lines.push(final_line);
-                
-                editor.lines.splice(row..=row, new_lines);
-                editor.cursor.row += clip_lines.len() - 1;
-                editor.cursor.col = last_pasted.chars().count(); // ✅ Works perfectly now
             }
-        } else {
-            editor.lines.extend(clip_lines);
-        }
-        editor.is_dirty = true;
-        ("Pasted from internal clipboard at cursor".to_string(), true)
-    }
-}
             PaletteAction::Info => {
                 let info = format!(
                    "███████╗██╗     ██╗██████╗ ███████╗\n\
@@ -208,7 +220,7 @@ impl Palette {
 - Skills        : Systems Programming, Rust, C, Ada, Micro-skills, Cooking, Chess, Touhou on Lunatic\n\
                      -----------------------------------\n\
                      ℹ️ [EDITOR INFO]\n\
-- Version       : v2.1.1\n\
+- Version       : v2.1.2\n\
 - Target File   : {}\n\
 - Total Lines   : {}\n\
 - Cursor Pos    : Row {}, Col {}\n\
@@ -383,9 +395,9 @@ impl Palette {
                 }
             }
             PaletteAction::UnknownCommand(cmd) => {
-                (format!("Unknown command: {}", cmd), false)
+                (format!("tf is this {}", cmd), false)
             }
-            PaletteAction::Empty => ("No command entered.".to_string(), true),
+            PaletteAction::Empty => (".Fym there's nothing".to_string(), true),
         }
     }
 }

@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 use anyhow::{Result, Context};
 
 pub struct AiConfig {
@@ -25,9 +26,19 @@ impl AiConfig {
 }
 
 static AI_CONFIG: OnceLock<Mutex<AiConfig>> = OnceLock::new();
+static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
 fn get_config() -> &'static Mutex<AiConfig> {
     AI_CONFIG.get_or_init(|| Mutex::new(AiConfig::new()))
+}
+
+fn get_http_client() -> &'static reqwest::Client {
+    HTTP_CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .unwrap_or_default()
+    })
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -56,12 +67,10 @@ pub struct ChatResponse {
     pub choices: Vec<ChatChoice>,
 }
 
-/// Handles setting credentials via 'check <token> <url>' or auditing the repository via 'check <query>'
 pub async fn run_check(workspace_root: &Path, input: &str) -> Result<String, String> {
-    let mut config = get_config().lock().map_err(|e| format!("Lock error: {}", e))?;
-
     // 1. Configure credentials on the fly if input contains a URL
     if input.contains("http://") || input.contains("https://") {
+        let mut config = get_config().lock().map_err(|e| format!("Lock error: {}", e))?;
         let parts: Vec<&str> = input.split_whitespace().collect();
         if parts.len() >= 2 {
             config.api_key = parts[0].to_string();
@@ -72,9 +81,13 @@ pub async fn run_check(workspace_root: &Path, input: &str) -> Result<String, Str
         }
     }
 
-    if config.api_key.is_empty() && !config.api_url.contains("localhost") {
-        return Err("Not connected! Run 'check <token> <url>' first.".to_string());
-    }
+    let (api_key, api_url, model) = {
+        let config = get_config().lock().map_err(|e| format!("Lock error: {}", e))?;
+        if config.api_key.is_empty() && !config.api_url.contains("localhost") {
+            return Err("Not connected! Run 'check <token> <url>' first.".to_string());
+        }
+        (config.api_key.clone(), config.api_url.clone(), config.model.clone())
+    }; // Lock dropped here before any await!
 
     // 2. Gather workspace files using .gitignore-aware walk
     let mut code_context = String::new();
@@ -83,22 +96,20 @@ pub async fn run_check(workspace_root: &Path, input: &str) -> Result<String, Str
         .git_ignore(true)
         .build();
 
-    for result in walker {
-        if let Ok(entry) = result {
-            let path = entry.path();
-            if path.is_file() {
-                if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                    if matches!(ext, "rs" | "toml" | "c" | "h" | "py" | "ts" | "js") {
-                        if let Ok(content) = fs::read_to_string(path) {
-                            let rel_path = path
-                                .strip_prefix(workspace_root)
-                                .unwrap_or(path)
-                                .display();
-                            code_context.push_str(&format!(
-                                "\n--- FILE: {} ---\n{}\n",
-                                rel_path, content
-                            ));
-                        }
+    for entry in walker.flatten() {
+        let path = entry.path();
+        if path.is_file() {
+            if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                if matches!(ext, "rs" | "toml" | "c" | "h" | "py" | "ts" | "js") {
+                    if let Ok(content) = fs::read_to_string(path) {
+                        let rel_path = path
+                            .strip_prefix(workspace_root)
+                            .unwrap_or(path)
+                            .display();
+                        code_context.push_str(&format!(
+                            "\n--- FILE: {} ---\n{}\n",
+                            rel_path, content
+                        ));
                     }
                 }
             }
@@ -110,15 +121,16 @@ pub async fn run_check(workspace_root: &Path, input: &str) -> Result<String, Str
     }
 
     let system_prompt = format!(
-        "You are an expert code auditor embedded in the ELIDE editor (v2.1.1).\n\
-         Here is the complete workspace codebase context:\n\n\
+        "You are ELIDE AI, a friendly and expert systems programming co-pilot integrated into the ELIDE text editor (v2.1.2).\n\
+         You have access to the user's complete workspace codebase context below:\n\n\
          {}\n\n\
-         Analyze the codebase thoroughly and respond directly to the user's audit request.",
+         Be conversational, clear, and direct. When reviewing code, balance technical rigor with an encouraging tone. \
+         If the user asks general questions or wants to brainstorm, chat naturally.",
         code_context
     );
 
     let payload = ChatRequest {
-        model: config.model.clone(),
+        model,
         messages: vec![
             ChatMessage {
                 role: "system".to_string(),
@@ -133,11 +145,11 @@ pub async fn run_check(workspace_root: &Path, input: &str) -> Result<String, Str
         stream: None,
     };
 
-    let client = reqwest::Client::new();
-    let mut req = client.post(&config.api_url).json(&payload);
+    let client = get_http_client();
+    let mut req = client.post(&api_url).json(&payload);
 
-    if !config.api_key.is_empty() {
-        req = req.bearer_auth(&config.api_key);
+    if !api_key.is_empty() {
+        req = req.bearer_auth(&api_key);
     }
 
     let res = req
@@ -162,42 +174,42 @@ pub async fn run_check(workspace_root: &Path, input: &str) -> Result<String, Str
         .ok_or_else(|| "Received empty response from AI model.".to_string())
 }
 
-/// Handles multi-turn chat sessions in the AI chat pane
 pub async fn run_chat_stream(root: &Path, history: Vec<(String, String)>) -> Result<String> {
-    let config = get_config().lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
-
-    if config.api_key.is_empty() && !config.api_url.contains("localhost") {
-        anyhow::bail!("AI API Key is missing. Set AI_API_KEY or run 'check <token> <url>' first.");
-    }
+    let (api_key, api_url, model) = {
+        let config = get_config().lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        if config.api_key.is_empty() && !config.api_url.contains("localhost") {
+            anyhow::bail!("AI API Key is missing. Set AI_API_KEY or run 'check <token> <url>' first.");
+        }
+        (config.api_key.clone(), config.api_url.clone(), config.model.clone())
+    }; // Lock dropped here before any await!
 
     let mut messages = vec![
         ChatMessage {
             role: "system".to_string(),
             content: format!(
-                "You are ELIDE AI, an expert systems programming assistant integrated into the ELIDE text editor. \
-                The current workspace root is: {}. Help the user write, debug, and understand code.",
+                "You are ELIDE AI, a friendly and expert systems programming co-pilot integrated into the ELIDE text editor (v2.1.2). \
+                The current workspace root is: {}. Be conversational, helpful, and natural when helping the user write, debug, and understand code.",
                 root.display()
             ),
         }
     ];
 
-    // Append full multi-turn conversation history
     for (role, content) in history {
         messages.push(ChatMessage { role, content });
     }
 
     let payload = ChatRequest {
-        model: config.model.clone(),
+        model,
         messages,
         temperature: Some(0.7),
         stream: Some(false),
     };
 
-    let client = reqwest::Client::new();
-    let mut req = client.post(&config.api_url).json(&payload);
+    let client = get_http_client();
+    let mut req = client.post(&api_url).json(&payload);
 
-    if !config.api_key.is_empty() {
-        req = req.bearer_auth(&config.api_key);
+    if !api_key.is_empty() {
+        req = req.bearer_auth(&api_key);
     }
 
     let res = req

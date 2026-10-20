@@ -1,4 +1,5 @@
 // src/main.rs
+#![warn(clippy::all, clippy::perf)]
 mod editor;
 mod palette;
 mod terminal;
