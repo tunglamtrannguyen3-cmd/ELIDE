@@ -75,15 +75,19 @@ struct AppState {
     clipboard: String,
     doc_version: u32,
     
+    // 🗂️ In-memory buffer cache to preserve edits across file switches & save-all
+    buffer_cache: HashMap<String, Vec<String>>,
+    pub should_exit: bool,
+    
     show_lsp_pane: bool,
     lsp_scroll_offset: usize,
     term_scroll_y: usize,
     term_scroll_x: usize,
 
-    // 🤖 New AI Chat Window State:
+    // 🤖 AI Chat Window State:
     pub show_ai_chat: bool,
     pub ai_input_buffer: String,
-    pub ai_messages: Vec<(String, String)>, // Stores (role, content) for multi-turn chat
+    pub ai_messages: Vec<(String, String)>,
     pub ai_scroll_offset: usize,
 }
 
@@ -97,17 +101,65 @@ impl AppState {
             command_history: Vec::new(),
             clipboard: String::new(),
             doc_version: 1,
+            buffer_cache: HashMap::new(),
+            should_exit: false,
             show_lsp_pane: false,
             lsp_scroll_offset: 0,
             term_scroll_y: 0,
             term_scroll_x: 0,
-            
-            // 🤖 Initialize AI Chat State:
             show_ai_chat: false,
             ai_input_buffer: String::new(),
             ai_messages: Vec::new(),
             ai_scroll_offset: 0,
         }
+    }
+
+    /// Save current active buffer lines to memory cache before switching
+    fn cache_current_buffer(&mut self) {
+        if let Some(ref filename) = self.editor.filename {
+            self.buffer_cache.insert(filename.clone(), self.editor.lines.clone());
+        }
+    }
+
+    /// Open or switch to a file while preserving in-memory edits
+    fn open_buffered_file(&mut self, path_str: &str) -> Result<()> {
+        self.cache_current_buffer();
+
+        if let Some(cached_lines) = self.buffer_cache.get(path_str) {
+            self.editor.lines = cached_lines.clone();
+            self.editor.filename = Some(path_str.to_string());
+            self.editor.cursor = editor::Cursor { row: 0, col: 0 };
+            self.editor.row_offset = 0;
+            self.editor.col_offset = 0;
+            self.editor.is_dirty = true;
+        } else {
+            self.editor.open(path_str)?;
+            self.buffer_cache.insert(path_str.to_string(), self.editor.lines.clone());
+        }
+        Ok(())
+    }
+
+    /// Save all open buffers stored in memory cache
+    fn save_all_buffers(&mut self) -> Result<String, String> {
+        self.cache_current_buffer();
+
+        if self.buffer_cache.is_empty() {
+            return match self.editor.save() {
+                Ok(msg) => Ok(msg),
+                Err(e) => Err(e.to_string()),
+            };
+        }
+
+        let mut saved_count = 0;
+        for (path_str, lines) in &self.buffer_cache {
+            let mut content = lines.join("\n");
+            content.push('\n');
+            std::fs::write(path_str, content).map_err(|e| format!("Failed to save {}: {}", path_str, e))?;
+            saved_count += 1;
+        }
+
+        self.editor.is_dirty = false;
+        Ok(format!("Successfully saved {} buffer(s) to disk.", saved_count))
     }
 
     async fn handle_input(
@@ -149,13 +201,10 @@ impl AppState {
                 let prompt = self.ai_input_buffer.trim().to_string();
                 self.ai_input_buffer.clear();
                 if !prompt.is_empty() {
-                    // Push user message to history
                     self.ai_messages.push(("user".to_string(), prompt.clone()));
-                    
                     let root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
                     let messages = self.ai_messages.clone();
                     
-                    // Call AI service with full history
                     match crate::ai::run_chat_stream(&root, messages).await {
                         Ok(response) => {
                             self.ai_messages.push(("assistant".to_string(), response));
@@ -194,11 +243,44 @@ impl AppState {
                     _ => None,
                 };
 
-                let (msg, success) = self.palette.execute_action(action, &mut self.editor, &mut self.clipboard).await;
-                
+                let (msg, success) = match action.clone() {
+                    PaletteAction::SaveAll => {
+                        match self.save_all_buffers() {
+                            Ok(m) => (m, true),
+                            Err(e) => (format!("Save All Error: {}", e), false),
+                        }
+                    }
+                    PaletteAction::Quit => {
+                        self.should_exit = true;
+                        ("Quitting without saving...".to_string(), true)
+                    }
+                    PaletteAction::SaveAndQuit => {
+                        self.cache_current_buffer();
+                        match self.save_all_buffers() {
+                            Ok(m) => {
+                                self.should_exit = true;
+                                (format!("{} Quitting...", m), true)
+                            }
+                            Err(e) => (format!("Save Error: {}", e), false),
+                        }
+                    }
+                    PaletteAction::Code(ref filename) | PaletteAction::Switch(ref filename) => {
+                        if filename.is_empty() {
+                            ("Error: Specify a file.".to_string(), false)
+                        } else {
+                            match self.open_buffered_file(filename) {
+                                Ok(_) => (format!("Switched to file: {}", filename), true),
+                                Err(e) => (format!("Failed to open {}: {}", filename, e), false),
+                            }
+                        }
+                    }
+                    _ => {
+                        self.palette.execute_action(action, &mut self.editor, &mut self.clipboard).await
+                    }
+                };
+
                 if let Some(cmd) = lsp_start_cmd {
                     let curr_dir = std::env::current_dir().unwrap_or_default().to_string_lossy().to_string();
-                    
                     let target_lang = if let Some(ref fname) = self.editor.filename {
                         lsp::get_language_id(fname)
                     } else {
@@ -215,7 +297,7 @@ impl AppState {
                         }
                     }
                 }
-                
+
                 self.command_history.push((msg, success));
                 self.palette.input_buffer.clear();
             }
@@ -293,7 +375,7 @@ impl AppState {
                     let mut lines = vec![
                         format!(" Workspace: {}", canonical_dir.display()),
                         " ──────────────────────────────────────────".to_string(),
-                        " ../".to_string(), // Ensure parent directory navigation is available
+                        " ../".to_string(),
                     ];
 
                     let mut sorted_entries: Vec<String> = entries
@@ -304,9 +386,9 @@ impl AppState {
                                 return None;
                             }
                             if e.path().is_dir() {
-                                Some(format!(" {}/", name))
+                                Some(format!("{}/", name))
                             } else {
-                                Some(format!(" {}", name))
+                                Some(name.to_string()) // 👈 Clippy warning fixed here
                             }
                         })
                         .collect();
@@ -321,16 +403,10 @@ impl AppState {
                 }
             }
         } else if path.is_file() {
-            if let Ok(content) = std::fs::read_to_string(path) {
-                let filename_str = path.to_string_lossy().to_string();
-                self.editor.lines = content.lines().map(String::from).collect();
-                if self.editor.lines.is_empty() {
-                    self.editor.lines.push(String::new());
-                }
-                self.editor.filename = Some(filename_str.clone());
-                self.editor.cursor.row = 0;
-                self.editor.cursor.col = 0;
-
+            let filename_str = path.to_string_lossy().to_string();
+            if let Err(e) = self.open_buffered_file(&filename_str) {
+                self.command_history.push((format!("Failed to open file: {}", e), false));
+            } else {
                 let full_text = self.editor.lines.join("\n");
                 let _ = self.lsp_client.open_file(&filename_str, &full_text);
             }
@@ -358,7 +434,7 @@ impl Layout {
         let palette_height = 1;
         
         let term_pane_height = if state.palette.is_active || state.show_ai_chat {
-            ((term_height as usize) * 35) / 100 // Slightly larger pane for comfortable chatting
+            ((term_height as usize) * 35) / 100
         } else {
             0
         };
@@ -739,7 +815,7 @@ async fn main() -> Result<()> {
                 let mut lines = vec![
                     format!(" Workspace: {}", canonical_dir.display()),
                     " ──────────────────────────────────────────".to_string(),
-                    " ../".to_string(), // Ensure parent directory navigation is available
+                    " ../".to_string(),
                 ];
 
                 let mut sorted_entries: Vec<String> = entries
@@ -750,9 +826,9 @@ async fn main() -> Result<()> {
                             return None;
                         }
                         if e.path().is_dir() {
-                            Some(format!(" {}/", name))
+                            Some(format!("{}/", name))
                         } else {
-                            Some(format!(" {}", name))
+                            Some(name.to_string()) // 👈 Clippy warning fixed here
                         }
                     })
                     .collect();
@@ -769,17 +845,19 @@ async fn main() -> Result<()> {
                 if state.editor.lines.is_empty() {
                     state.editor.lines.push(String::new());
                 }
-                state.editor.filename = Some(arg);
+                state.editor.filename = Some(arg.clone());
+                state.buffer_cache.insert(arg, state.editor.lines.clone());
             }
         }
     }
 
-    // [NOTE]: Automatic LSP startup block has been removed completely. 
-    // You can now activate your LSP manually via the command palette using `lsp <cmd>` (e.g., `lsp rust-analyzer`).
-
     let mut needs_redraw = true;
 
     loop {
+        if state.should_exit {
+            break;
+        }
+
         while let Ok((uri, diags)) = diag_rx.try_recv() {
             if diags.is_empty() {
                 state.current_diagnostics.remove(&uri);
@@ -803,7 +881,6 @@ async fn main() -> Result<()> {
                     break;
                 }
             }
-            // ✅ Integrated Paste event handler:
             InputEvent::Paste(text) => {
                 needs_redraw = true;
                 if state.palette.is_active {
@@ -831,11 +908,11 @@ async fn main() -> Result<()> {
             InputEvent::ScrollDown => {
                 needs_redraw = true;
                 if state.palette.is_active {
-                    state.term_scroll_y = state.term_scroll_y.saturating_add(3); // Fixed to saturating_add as discussed earlier
+                    state.term_scroll_y = state.term_scroll_y.saturating_add(3);
                 } else if state.show_lsp_pane {
                     state.lsp_scroll_offset = state.lsp_scroll_offset.saturating_add(3);
                 } else {
-                 state.editor.move_cursor(3, 0);
+                    state.editor.move_cursor(3, 0);
                 }
             }
             InputEvent::Resize => {

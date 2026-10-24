@@ -5,7 +5,10 @@ use crate::clipboard::SystemClipboard;
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum PaletteAction {
-    Save,
+    Save(Option<String>), // Supports optional filename argument (e.g., :w file.rs)
+    SaveAll,              // Save all open buffers (-sa, wa, :wa)
+    Quit,                 // Quit without saving (-l, :q!)
+    SaveAndQuit,          // Save and quit (-sl, :wq)
     Info,
     Help,
     Bro,
@@ -22,7 +25,7 @@ pub enum PaletteAction {
     Acel(String),
     Copy(Option<String>),
     Paste,
-    AiCheck(String), // Handles both 'check <token> <url>' and 'check <query>'
+    AiCheck(String),
 }
 
 pub struct Palette {
@@ -52,8 +55,12 @@ impl Palette {
             return PaletteAction::Empty;
         }
 
+        // Exact match commands
         match trimmed {
-            "-s" | "--save" | "save" | ":w" => return PaletteAction::Save,
+            "-s" | "--save" | "save" | ":w" => return PaletteAction::Save(None),
+            "-sa" | "--save-all" | "wa" | ":wa" => return PaletteAction::SaveAll,
+            "-l" | ":q!" | "q!" | "quit!" => return PaletteAction::Quit,
+            "-sl" | ":wq" | "wq" => return PaletteAction::SaveAndQuit,
             "-i" | "--info" | "info" => return PaletteAction::Info,
             "-h" | "-?" | "--help" | "help" | "?" => return PaletteAction::Help,
             "-bro!" | "bro" | "bro!" => return PaletteAction::Bro,
@@ -63,7 +70,14 @@ impl Palette {
             _ => {}
         }
 
-        if trimmed.starts_with("copy ") {
+        // Prefix match commands
+        if trimmed.starts_with(":w ") {
+            PaletteAction::Save(Some(Self::extract_arg(trimmed, ":w ")))
+        } else if trimmed.starts_with("-s ") {
+            PaletteAction::Save(Some(Self::extract_arg(trimmed, "-s ")))
+        } else if trimmed.starts_with("save ") {
+            PaletteAction::Save(Some(Self::extract_arg(trimmed, "save ")))
+        } else if trimmed.starts_with("copy ") {
             PaletteAction::Copy(Some(Self::extract_arg(trimmed, "copy ")))
         } else if trimmed.starts_with("\"+y ") {
             PaletteAction::Copy(Some(Self::extract_arg(trimmed, "\"+y ")))
@@ -97,10 +111,21 @@ impl Palette {
         self.input_buffer.clear();
 
         match action {
-            PaletteAction::Save => match editor.save() {
-                Ok(msg) => (msg, true),
-                Err(e) => (format!("Save Error: {}", e), false),
-            },
+            PaletteAction::Save(path_opt) => {
+                if let Some(path) = path_opt {
+                    if !path.is_empty() {
+                        editor.filename = Some(path);
+                    }
+                }
+                match editor.save() {
+                    Ok(msg) => (msg, true),
+                    Err(e) => (format!("Save Error: {}", e), false),
+                }
+            }
+            PaletteAction::SaveAll | PaletteAction::Quit | PaletteAction::SaveAndQuit => {
+                // Handled at the AppState level
+                ("Handled".to_string(), true)
+            }
             PaletteAction::Copy(range_opt) => {
                 let text_to_copy = match range_opt {
                     None => editor.lines.join("\n"),
@@ -213,7 +238,7 @@ impl Palette {
 - Skills        : Systems Programming, Rust, C, Ada, Micro-skills, Cooking, Chess, Touhou on Lunatic\n\
                      -----------------------------------\n\
                      ℹ️ [EDITOR INFO]\n\
-- Version       : v2.1.2\n\
+- Version       : v2.1.3\n\
 - Target File   : {}\n\
 - Total Lines   : {}\n\
 - Cursor Pos    : Row {}, Col {}\n\
@@ -229,10 +254,11 @@ impl Palette {
             }
             PaletteAction::Help => (
                 "📖 [ELIDE COMMAND PALETTE MANUAL]\n\
-- Flags: -s (Save), -i (Info), copy [a-b] / paste, -bro! (Vent)\n\
+- Flags: -s [file] (Save), -sa / wa / :wa (Save All), -l / :q! (Quit), -sl / :wq (Save & Quit)\n\
 - File Cmds: new <file>, code <file>, switch <file>\n\
 - AI Audit & Config: check <token> <url> OR check <query>\n\
 - Foreground Process: acel <cmd>\n\
+- Mood Commands: --im-stuck, --im-bored, --im-hungry, --im-tired, --im-stressed, --im-burntout, -bro!\n\
 - Advanced: :funcs (Line functions)\n\
 - LSP and Bash: lsp <cmd>, sh <cmd>"
                     .to_string(),
@@ -254,8 +280,8 @@ impl Palette {
             PaletteAction::Joke(joke) => {
                 let responses = match joke.as_str() {
                     "--im-stuck" => vec![
-                        "Have you tried turning it off and on again? Or maybe read the docs... jk, just ask ChatGPT.",
-                        "Rubber duck debugging time: explain your entire code line-by-line to an inanimate object.",
+                        "Have you tried turning it off and on again? Or maybe read the docs... jk, just ask ELIDE AI.",
+                        "Rubber duck debugging time: explain your entire code line-by-line to your coffee mug.",
                         "Take a 5-minute walk. Your subconscious will solve the bug while you breathe fresh air.",
                         "Delete the whole function and rewrite it. Sometimes starting clean is faster than fixing spaghetti."
                     ],
@@ -277,6 +303,17 @@ impl Palette {
                         "Close your laptop. Nothing good gets coded past 2 AM.",
                         "Rest now, conquer the segmentation fault tomorrow."
                     ],
+                    "--im-stressed" => vec![
+                        "Take 3 deep breaths. Drop your shoulders away from your ears.",
+                        "Remember: it's just code. No one's life is on the line right now.",
+                        "Step away from the keyboard, stretch your arms, and drink a glass of water.",
+                        "Break the problem down into the tiniest possible piece. Solve just that one micro-step."
+                    ],
+                    "--im-burntout" => vec![
+                        "You've been grinding hard. Close ELIDE, touch some grass, and play a game.",
+                        "Burnout is your brain's firewall kicking in. Listen to it and log off.",
+                        "Take a guilt-free rest day. Productivity will wait for you."
+                    ],
                     _ => vec![
                         "I am an editor, not a therapist. But you got this!",
                         "Keep pushing forward, you're closer than you think.",
@@ -293,33 +330,41 @@ impl Palette {
                 (format!("🤖 {}", chosen), true)
             }
             PaletteAction::Bro => {
-                let games = [
-                    "Minecraft (Sandbox / Build & Relax)",
-                    "Touhou Project (Bullet Hell / STG)",
-                    "Elden Ring (Action RPG / Exploration)",
-                    "CS2 (Tactical Shooter / Competitive)",
-                    "Chess (Strategy / Mental Workout)",
-                    "Sleep (The Ultimate Recovery Meta)",
-                    "Terraria (2D Sandbox Adventure)",
-                    "Hollow Knight (Metroidvania Exploration)",
-                    "Celeste (Precision Platformer)",
-                    "Stardew Valley (Farming & Chill)"
+                let recommendations = [
+                    "🎮 Game Rec: Minecraft (Sandbox / Build & Relax)",
+                    "🎮 Game Rec: Touhou Project (Bullet Hell / STG - time to dodge bullet hells instead of bugs)",
+                    "🎮 Game Rec: Elden Ring (Action RPG / Exploration)",
+                    "🎮 Game Rec: CS2 (Tactical Shooter / Competitive)",
+                    "♟️ Mind Rec: Chess (Strategy / Mental Workout)",
+                    "🛌 Meta Rec: Sleep (The Ultimate Recovery Meta)",
+                    "🌿 Game Rec: Stardew Valley (Farming & Chill)",
+                    "🗡️ Game Rec: Hollow Knight (Metroidvania Exploration)",
+                    "🧗 Game Rec: Celeste (Precision Platformer)",
                 ];
 
-                let seed = std::time::SystemTime::now()
+                let quests = [
+                    "⚔️ Side Quest: Drink a full glass of water without spilling it on your keyboard.",
+                    "⚔️ Side Quest: Go outside and look at the sky for at least 3 minutes.",
+                    "⚔️ Side Quest: Stretch your back, neck, and wrists right now.",
+                    "⚔️ Side Quest: Text a friend a random meme and close your IDE for 15 minutes.",
+                ];
+
+                let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_millis() as usize;
 
-                let chosen = games[seed % games.len()];
+                let chosen_game = recommendations[now % recommendations.len()];
+                let chosen_quest = quests[(now / 7) % quests.len()];
 
                 (
                     format!(
-                        "🎲 [RANDOM BREAK GENERATOR]\n\n\
-                         Time to step away from the keyboard. Your assigned activity:\n\n\
+                        "🎲 [ELIDE BRO! RECOVERY STATION]\n\n\
+                         Listen up, fellow developer. Here is your prescription:\n\n\
+                         - {}\n\
                          - {}\n\n\
-                         Close the terminal, go clear your head, and come back fresh!",
-                        chosen
+                         Close the terminal, clear your head, and come back ready to beat Doom!",
+                        chosen_game, chosen_quest
                     ),
                     true,
                 )
