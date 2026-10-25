@@ -1,6 +1,6 @@
 [package]
 name = "elide"
-version = "2.1.3"
+version = "2.2.0"
 edition = "2021"
 description = "I'mma beat Doom."
 license = "License-Ref-EOPL-2026.2"
@@ -14,7 +14,7 @@ crossterm = "0.29"
 ratatui = "0.30"
 
 # Async runtime for non-blocking execution
-tokio = { version = "1.53", features = ["full"] }
+tokio = { version = "1.54.1", features = ["full"] }
 
 # Error handling
 anyhow = "1.0"

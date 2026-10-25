@@ -1,5 +1,5 @@
 // src/palette.rs
-use crate::editor::{Cursor, Editor};
+use crate::editor::Editor;
 use crate::process;
 use crate::clipboard::SystemClipboard;
 
@@ -17,13 +17,15 @@ pub enum PaletteAction {
     RunBash(String),
     UnknownCommand(String),
     Empty,
-
+    Tree,
     New(String),
     Code(String),
     Switch(String),
     SetLsp(String),
     Acel(String),
     Copy(Option<String>),
+    CopyTerm,
+    CopyLsp,
     Paste,
     AiCheck(String),
 }
@@ -63,10 +65,13 @@ impl Palette {
             "-sl" | ":wq" | "wq" => return PaletteAction::SaveAndQuit,
             "-i" | "--info" | "info" => return PaletteAction::Info,
             "-h" | "-?" | "--help" | "help" | "?" => return PaletteAction::Help,
-            "-bro!" | "bro" | "bro!" => return PaletteAction::Bro,
+            "-bro!" | "bro" | "bro!" | "-bro" => return PaletteAction::Bro,
             ":funcs" => return PaletteAction::Funcs,
             "copy" | "\"+y" => return PaletteAction::Copy(None),
+            "copy term" | "copy log" => return PaletteAction::CopyTerm,
+            "copy lsp" => return PaletteAction::CopyLsp,
             "paste" | "\"+p" => return PaletteAction::Paste,
+            "tree" | "workspace" | ":tree" | ":files" => return PaletteAction::Tree,
             _ => {}
         }
 
@@ -77,6 +82,10 @@ impl Palette {
             PaletteAction::Save(Some(Self::extract_arg(trimmed, "-s ")))
         } else if trimmed.starts_with("save ") {
             PaletteAction::Save(Some(Self::extract_arg(trimmed, "save ")))
+        } else if trimmed.starts_with("copy term") || trimmed.starts_with("copy log") {
+            PaletteAction::CopyTerm
+        } else if trimmed.starts_with("copy lsp") {
+            PaletteAction::CopyLsp
         } else if trimmed.starts_with("copy ") {
             PaletteAction::Copy(Some(Self::extract_arg(trimmed, "copy ")))
         } else if trimmed.starts_with("\"+y ") {
@@ -102,6 +111,40 @@ impl Palette {
         }
     }
 
+    /// Helper to parse line ranges safely for copy operations
+    fn parse_line_range(range_str: &str, max_lines: usize) -> Result<(usize, usize), String> {
+        let range_str = range_str.trim();
+        if range_str.is_empty() || max_lines == 0 {
+            return Err("Editor buffer is empty.".to_string());
+        }
+
+        let parts: Vec<&str> = range_str.split('-').map(|s| s.trim()).collect();
+        let (start, end) = match parts.len() {
+            1 => {
+                let n = parts[0].parse::<usize>().map_err(|_| "Error: Invalid line number.")?;
+                (n, n)
+            }
+            2 => {
+                let s = parts[0].parse::<usize>().map_err(|_| "Error: Invalid line numbers.")?;
+                let e = parts[1].parse::<usize>().map_err(|_| "Error: Invalid line numbers.")?;
+                (s, e)
+            }
+            _ => return Err("Error: Invalid range format. Use format a-b or single line (e.g. copy 5)".to_string()),
+        };
+
+        if start == 0 || end == 0 {
+            return Err("Error: Line numbers start at 1 (no line 0).".to_string());
+        }
+        if start > max_lines || end > max_lines {
+            return Err(format!("Error: Line range out of bounds (file has only {} lines).", max_lines));
+        }
+        if start > end {
+            return Err("Error: Start line cannot be greater than end line.".to_string());
+        }
+
+        Ok((start - 1, end - 1))
+    }
+
     pub async fn execute_action(
         &mut self,
         action: PaletteAction,
@@ -122,50 +165,23 @@ impl Palette {
                     Err(e) => (format!("Save Error: {}", e), false),
                 }
             }
-            PaletteAction::SaveAll | PaletteAction::Quit | PaletteAction::SaveAndQuit => {
-                // Handled at the AppState level
+            PaletteAction::Tree => {
+                ("Tree view opened.".to_string(), true)
+            }
+            PaletteAction::SaveAll 
+            | PaletteAction::Quit 
+            | PaletteAction::SaveAndQuit 
+            | PaletteAction::CopyTerm 
+            | PaletteAction::CopyLsp => {
                 ("Handled".to_string(), true)
             }
             PaletteAction::Copy(range_opt) => {
                 let text_to_copy = match range_opt {
                     None => editor.lines.join("\n"),
                     Some(range_str) => {
-                        let range_str = range_str.trim();
-                        if range_str.is_empty() {
-                            editor.lines.join("\n")
-                        } else {
-                            let parts: Vec<&str> = range_str.split('-').map(|s| s.trim()).collect();
-                            let (start, end) = if parts.len() == 1 {
-                                if let Ok(n) = parts[0].parse::<usize>() {
-                                    (n, n)
-                                } else {
-                                    return ("Error: Invalid line number.".to_string(), false);
-                                }
-                            } else if parts.len() == 2 {
-                                if let (Ok(s), Ok(e)) = (parts[0].parse::<usize>(), parts[1].parse::<usize>()) {
-                                    (s, e)
-                                } else {
-                                    return ("Error: Invalid line numbers. Use format a-b (e.g. copy 1-5)".to_string(), false);
-                                }
-                            } else {
-                                return ("Error: Invalid range format. Use format a-b or single line (e.g. copy 5)".to_string(), false);
-                            };
-
-                            if editor.lines.is_empty() {
-                                return ("Editor buffer is empty.".to_string(), false);
-                            } else if start == 0 || end == 0 {
-                                return ("Error: Line numbers start at 1 (no line 0).".to_string(), false);
-                            } else if start > editor.lines.len() || end > editor.lines.len() {
-                                return (format!("Error: Line range out of bounds (file has only {} lines).", editor.lines.len()), false);
-                            } else {
-                                let start_idx = start - 1;
-                                let end_idx = end - 1;
-                                if start_idx <= end_idx {
-                                    editor.lines[start_idx..=end_idx].join("\n")
-                                } else {
-                                    return ("Error: Start line cannot be greater than end line.".to_string(), false);
-                                }
-                            }
+                        match Self::parse_line_range(&range_str, editor.lines.len()) {
+                            Ok((start_idx, end_idx)) => editor.lines[start_idx..=end_idx].join("\n"),
+                            Err(err_msg) => return (err_msg, false),
                         }
                     }
                 };
@@ -238,7 +254,7 @@ impl Palette {
 - Skills        : Systems Programming, Rust, C, Ada, Micro-skills, Cooking, Chess, Touhou on Lunatic\n\
                      -----------------------------------\n\
                      ℹ️ [EDITOR INFO]\n\
-- Version       : v2.1.3\n\
+- Version       : v2.2.0\n\
 - Target File   : {}\n\
 - Total Lines   : {}\n\
 - Cursor Pos    : Row {}, Col {}\n\
@@ -256,6 +272,7 @@ impl Palette {
                 "📖 [ELIDE COMMAND PALETTE MANUAL]\n\
 - Flags: -s [file] (Save), -sa / wa / :wa (Save All), -l / :q! (Quit), -sl / :wq (Save & Quit)\n\
 - File Cmds: new <file>, code <file>, switch <file>\n\
+- Clipboard: copy [a-b], copy term / copy log, copy lsp\n\
 - AI Audit & Config: check <token> <url> OR check <query>\n\
 - Foreground Process: acel <cmd>\n\
 - Mood Commands: --im-stuck, --im-bored, --im-hungry, --im-tired, --im-stressed, --im-burntout, -bro!\n\
@@ -373,37 +390,8 @@ impl Palette {
                 Ok(res) => (res.output, res.success),
                 Err(e) => (format!("Bash Error: {}", e), false),
             },
-            PaletteAction::New(filename) => {
-                if filename.is_empty() {
-                    ("Error: Filename cannot be empty.".to_string(), false)
-                } else {
-                    editor.filename = Some(filename.clone());
-                    editor.lines = vec![String::new()];
-                    editor.cursor = Cursor { row: 0, col: 0 };
-                    editor.is_dirty = true;
-                    (format!("Created new buffer: {}", filename), true)
-                }
-            }
-            PaletteAction::Code(filename) => {
-                if filename.is_empty() {
-                    ("Error: Specify a file to open.".to_string(), false)
-                } else {
-                    match editor.open(&filename) {
-                        Ok(_) => (format!("Opened file: {}", filename), true),
-                        Err(e) => (format!("Failed to open {}: {}", filename, e), false),
-                    }
-                }
-            }
-            PaletteAction::Switch(filename) => {
-                if filename.is_empty() {
-                    ("Error: Specify a file to switch to.".to_string(), false)
-                } else {
-                    match editor.open(&filename) {
-                        Ok(_) => (format!("Switched to file: {}", filename), true),
-                        Err(e) => (format!("Switch failed: {}", e), false),
-                    }
-                }
-            }
+            PaletteAction::New(_filename) => ("Handled".to_string(), true),
+            PaletteAction::Code(_filename) | PaletteAction::Switch(_filename) => ("Handled".to_string(), true),
             PaletteAction::SetLsp(cmd) => {
                 if cmd.is_empty() {
                     ("What do you tryna check it with, air?.".to_string(), false)

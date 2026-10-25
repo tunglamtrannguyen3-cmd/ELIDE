@@ -225,6 +225,14 @@ impl LspClient {
     }
 }
 
+impl Drop for LspClient {
+    fn drop(&mut self) {
+        if let Some(mut child) = self._child.take() {
+            let _ = child.start_kill();
+        }
+    }
+}
+
 impl Default for LspClient {
     fn default() -> Self {
         Self::new()
