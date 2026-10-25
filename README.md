@@ -1,62 +1,86 @@
-# ⚡🥚 ELIDE v2.1.3 — THE POLISH UPDATE 🦆
+# 🥚 ELIDE — Easier Life @ IDE 🦆⚡
 
 <p align="center">
-  <img src="https://github.com/user-attachments/assets/46a16081-bff4-4e32-8506-5727a1076b5f" alt="ELIDE Duck Logo" width="280"/>
-</p>
-
-<h3 align="center">🦆 Your Code. Your Terminal. YOUR RAM. ⚡</h3>
-
-<p align="center">
-  A lightweight, Rust-powered terminal IDE for developers who want to code more and fight their editor less.
+  <strong>🦀 Built with Rust. Powered by your tools. Driven by your ideas.</strong>
 </p>
 
 <p align="center">
-  🦀 Rust-powered · ⚡ Terminal-native · 🤖 AI-assisted · 🔍 LSP-enabled
+  <img src="https://github.com/user-attachments/assets/46a16081-bff4-4e32-8506-5727a1076b5f" alt="ELIDE Duck Logo" width="240"/>
 </p>
 
 <p align="center">
-  <strong>🚫 No Electron empire. 🧠 No unnecessary complexity. 💻 Just CODE.</strong>
+  💻 Your Code. Your Terminal. Your RAM. 💜
+</p>
+
+<p align="center">
+  <strong>Less waiting. Less bloat. More building. 🚀</strong>
 </p>
 
 ---
 
-## 👋 Yo, welcome to ELIDE!
+## 👋 Welcome to ELIDE!
 
-Ever opened an IDE to fix one tiny bug, only to discover that your computer has decided to simulate the heat death of the universe? 💀🔥
+Ever opened an IDE to fix one tiny bug, only to end up configuring the editor instead of fixing the bug? 😭
 
-Ever installed so many editor extensions that configuring your editor became a whole separate software engineering career? 😭
+Ever wanted a development environment that stays in your terminal, works with the tools *you* choose, and doesn't force you into somebody else's workflow?
 
-Yeah. We know the vibe.
+**That's the idea behind ELIDE.**
 
-**ELIDE (Easier Life @ IDE)** is a Rust-based terminal IDE built around one simple idea:
+ELIDE (Easier Life @ IDE) is a Rust-powered, terminal-based development environment built to bring useful coding tools into one place. It combines code editing, command execution, language-server integration, clipboard support, and AI-assisted workflows in a focused terminal interface.
 
-> 🗣️ Your editor should launch before you finish questioning your life choices, not after.
+I'm building ELIDE because I want development tools to help me build software—not become another project I have to maintain. 🛠️
 
-ELIDE brings file editing, AI assistance, language-server integration, clipboard support, and command execution into one terminal-focused environment.
+And yes, an IDE can have a little personality, too. 🦆
 
-No need to launch an entire graphical universe just to edit a file. 🌌
+## ✨ What makes ELIDE different?
 
-Just open your terminal, summon the duck, and get to work. 🦆⌨️
+- 🦀 **Rust-powered:** A systems-language foundation for a terminal-native development environment.
+- 🖥️ **Terminal-first:** Keep your coding workflow close to your shell and existing toolchain.
+- 🔌 **Bring your own tools:** Choose and add the external tools that fit your workflow. ELIDE doesn't need to dictate your entire development ecosystem.
+- 🤖 **AI-assisted workflows:** Get help with coding questions and workspace audits when a compatible provider is configured.
+- 🔍 **LSP integration:** Work with compatible language servers for diagnostics and language tooling.
+- 📋 **Clipboard support:** Copy and paste code through supported clipboard mechanisms.
+- ⚙️ **Command execution:** Run shell commands and interactive programs from your workflow.
+- 🎨 **Custom RGB palette:** A Catppuccin-inspired color scheme with distinct syntax and status colors.
+- 🥚 **A little chaos:** Easter eggs, playful messages, and reminders that developers are humans, too.
 
-### 💖 Why ELIDE?
+No claim that ELIDE replaces every IDE. No claim that every external tool works automatically.
 
-- 🦀 **Built with Rust** — because systems programming deserves some love.
-- ⚡ **Resource-conscious by design** — your RAM has better things to do than babysit your editor.
-- 🤖 **AI co-pilot** — ask questions and audit your code without leaving your workflow.
-- 🔍 **LSP integration** — bring language-server diagnostics into your terminal.
-- 📋 **Clipboard support** — copy and paste code without fighting your environment.
-- 🖥️ **Command execution** — run shell commands and interactive programs.
-- 🎨 **Catppuccin-inspired colors** — pretty colors, fewer terminal-induced existential crises.
-- 🥚 **Easter eggs** — because an IDE doesn't have to be a soulless rectangle.
-- 🛌 **Developer recovery station** — even programmers need maintenance.
+Just a development environment with a clear direction. 💜
 
 ---
 
-## ✨ Features that actually matter
+## 🔌 Your tools. Your rules. Your ecosystem.
 
-### 📝 1. Code first. Complicated nonsense later.
+Here's an important part of ELIDE's philosophy:
 
-Create, open, switch, and save files directly from the command palette.
+**The user chooses the tools.**
+
+Different developers need different workflows. One person might want a debugger, another might want a compiler, and someone else might have a completely different collection of utilities.
+
+Why should an IDE decide that everyone must use the same set?
+
+With ELIDE, you can build your workflow around the tools you want to use. Run external commands, use compatible language servers, configure an AI provider, and keep using the software that makes sense for your projects.
+
+🛠️ Want a different compiler? Use the one that fits your project.
+
+🔍 Need a language server? Configure a compatible one.
+
+🐛 Want to debug? Use your preferred debugger where your environment and workflow support it.
+
+⚙️ Have a specialized utility? Make it part of your toolchain.
+
+**Your environment should adapt to your work—not the other way around.**
+
+> Note: ELIDE's current command and integration mechanisms should not be confused with a dedicated plugin-loading API. External tools and integrations depend on how they're configured and invoked.
+
+---
+
+## 📝 Features
+
+### 1. 💾 File editing without the unnecessary detours
+
+Create files, open existing ones, switch between files, and save your work through the command palette.
 
 ```text
 new main.rs
@@ -65,181 +89,143 @@ switch main.rs
 save
 ```
 
-Need to save everything? Quit? Save and quit?
+Need to save all open buffers? There's a command for that, too.
 
-ELIDE has commands for those, too.
+Need to quit without saving? ELIDE has a command for that as well.
 
-Because sometimes the most advanced feature is simply **letting you get your work done.** 🫡
+Because losing your work is a bug nobody wants to debug. 💀
 
-### 🤖 2. Your AI co-pilot lives in your terminal
+### 2. 🤖 AI-assisted development
 
-Press `Alt + A` to open the AI chat interface.
+Sometimes the compiler explains the problem. Sometimes it gives you a message that looks like it was written by an ancient oracle.
 
-Need help understanding a suspicious function? Want an AI-assisted audit of your workspace? Have a bug that makes absolutely no sense?
+That's where AI assistance can help. 🧠
 
-Give your configured AI provider some context and start investigating. 🔎
+ELIDE includes an AI chat interface and an AI-assisted workspace-check workflow.
+
+Example:
 
 ```text
 check Review this Rust module for possible bugs
 ```
 
-ELIDE's AI subsystem includes multi-turn chat streaming and workspace-audit functionality.
+AI integration depends on a compatible provider and valid configuration. Network access may also be required.
 
-⚠️ You'll need a compatible AI provider, valid configuration, and network access. API keys are secrets, not decorations for your README. 🔐
+🔐 **Keep your API keys private.** Never commit credentials to your repository or paste them into public logs.
 
-### 🔍 3. LSP diagnostics without the treasure hunt
+AI can help you investigate problems, but always review its suggestions before trusting them.
 
-Press `Alt + L` to toggle the diagnostics pane.
+### 3. 🔍 Language-server integration
+
+ELIDE supports language-server workflows through compatible LSP implementations.
+
+The intended workflow includes:
+
+- Diagnostics from configured language servers.
+- A diagnostics pane.
+- Language tooling supplied by the server you choose.
+
+Example command:
 
 ```text
 lsp rust-analyzer
 ```
 
-Connect a compatible language server and inspect the diagnostics it reports.
+The actual capabilities depend on the configured language server, its availability, and your environment.
 
-No more playing hide-and-seek with every compiler complaint. 🫠
+ELIDE doesn't magically provide every language's compiler or language server. Bring the appropriate tools and configure them for your setup. 🦀
 
-Actual language features depend on the language server you install and configure.
+### 4. 📋 Copy, paste, and keep moving
 
-### 📋 4. Clipboard integration, because Ctrl+C shouldn't be a boss fight
-
-Copy a line, grab a range, or paste text into your editor.
+Code is meant to move between files, terminals, and applications. Your clipboard shouldn't become the final boss. 😭
 
 ```text
+copy
 copy 5
 copy 5-12
 paste
 ```
 
-ELIDE integrates with a system clipboard abstraction, an internal buffer, and OSC 52 support.
+These commands support copying the current buffer or selected line ranges and pasting clipboard contents.
 
-Your terminal environment still matters, but at least copying code doesn't have to involve summoning ancient magic. 🧙‍♂️
+ELIDE's clipboard implementation can work with its internal buffer, system clipboard integration, and OSC 52 where supported.
 
-### 🖥️ 5. The terminal is your playground
+Your terminal and desktop environment may affect which clipboard mechanisms are available.
 
-Run shell commands or launch interactive foreground programs.
+### 5. 🖥️ Run commands from your workflow
+
+Already have a compiler, debugger, formatter, or other utility installed?
+
+Use your existing toolchain instead of expecting an IDE to bundle the entire software universe. 🌌
 
 ```text
 sh cargo test
 acel cargo run
 ```
 
-ELIDE's process subsystem supports command execution and resource-statistics reporting, including RSS tracking where supported.
+ELIDE includes shell-command and interactive-command workflows.
 
-Build. Test. Debug. Repeat.
+The tools you can run depend on what's installed and available in your environment.
 
-The traditional developer lifestyle, now with fewer reasons to leave your terminal. 🦀⚙️
+**ELIDE gives you a place to work with your tools. You decide which tools belong there.**
 
-### 🧭 6. Find your functions before your patience expires
+### 6. 🧭 Find functions faster
+
+Need to find where a function is declared?
 
 ```text
 :funcs
 ```
 
-ELIDE can list matching Rust-style function declarations in the current buffer with their line numbers.
+ELIDE can list matching Rust-style function declarations from the current buffer, including their line numbers.
 
-It's not a complete semantic code browser, but when you just need to find that function you wrote three hours ago, every second counts. 🔎
+It's a handy shortcut when you just need to locate a function without manually scanning the whole file. 🔎
 
-### 🎨 7. A color palette with actual vibes
+### 7. 🎨 A custom palette with actual personality
 
-ELIDE uses a custom Catppuccin-inspired RGB palette. 💜
+ELIDE uses a custom RGB palette defined in `src/colors.rs`.
 
-| Element | Color | Vibe |
+| Element | Color | RGB |
 |---|---|---|
-| 🔑 Keywords | Mauve | Magical |
-| 🟡 Types | Yellow | Warm |
-| 🍑 Numbers | Peach | Soft |
-| 🌿 Strings | Green | Peaceful |
-| 💙 Functions | Blue | Focused |
-| 📝 Default text | Lavender | Classic ELIDE |
-| 🌫️ Comments | Gray | Quiet |
-| 🟥 Errors | Red | FIX THIS, BRO |
-| 🟢 Success | Green | WE COOKED |
-| 🟡 Warnings | Yellow | Something's suspicious |
-| 🩵 Hints | Teal | A friendly suggestion |
+| 🔑 Keywords | Mauve | `203, 166, 247` |
+| 🟡 Types | Yellow | `249, 226, 175` |
+| 🍑 Numbers | Peach | `250, 179, 135` |
+| 🌿 Strings | Green | `166, 227, 161` |
+| 💙 Functions | Blue | `137, 180, 250` |
+| 💜 Default text | Lavender | `205, 214, 244` |
+| 🌫️ Comments | Gray | `147, 153, 178` |
+| 🟥 Errors | Red | `243, 139, 168` |
+| 🟢 Success | Green | `166, 227, 161` |
+| 🟡 Warnings | Yellow | `250, 227, 176` |
+| 🩵 Hints | Teal | `148, 226, 213` |
 
-The palette is defined in `src/colors.rs`, so the colors aren't just random decorations thrown into a terminal and called a theme.
+The status system also distinguishes different message categories, with bold styling applied to selected statuses.
 
-**A little color. A little clarity. A lot less visual chaos.** 🎨
+It's not just about making the terminal look pretty. Consistent visual cues help make information easier to scan. 🎨
 
----
+### 8. 🦆 The Bro! Recovery Station
 
-## 🥊 ELIDE vs. the usual suspects
+Coding for too long can turn even a simple bug into a personal enemy.
 
-| Editor | The good stuff 💚 | The trade-off 💀 |
-|---|---|---|
-| 🟦 VS Code | Massive extension ecosystem | Electron-based architecture and potentially substantial resource use |
-| 🟥 JetBrains | Powerful language tooling | Indexing and analysis can be resource-intensive |
-| 🟩 Helix | Modern terminal-native modal editing | Has a learning curve |
-| 🟪 Neovim | Incredible customization | Advanced setups can become a hobby of their own |
-| 🥚 **ELIDE** | Terminal IDE with AI, LSP, clipboard, and command execution | A developing ecosystem with fewer integrations than established IDEs |
-
-We're not claiming every other editor is trash. 😭
-
-VS Code is useful. JetBrains is powerful. Neovim is ridiculously customizable.
-
-**ELIDE simply takes a different route:** bring useful development tools into a focused, terminal-native environment.
-
-We're here to build software, not participate in an editor configuration speedrun. 🏃‍♂️💨
-
----
-
-## ⌨️ Keybindings — learn these and cook
-
-| Shortcut | Action |
-|---|---|
-| `Alt + A` 🤖 | Toggle AI chat |
-| `Alt + T` 🛠️ | Toggle command palette / terminal pane |
-| `Alt + L` 🔍 | Toggle LSP diagnostics |
-| `Alt + Up` ⬆️ | Scroll diagnostics or terminal output upward |
-| `Alt + Down` ⬇️ | Scroll diagnostics or terminal output downward |
-| `Esc` 🏃 | Close the active pane or return focus to the editor |
-
-## 🛠️ Command palette — the good stuff
-
-Summon it with `Alt + T`. ⚡
-
-| Command | What it does |
-|---|---|
-| `new <file>` 📄 | Create a buffer |
-| `code <file>` 📂 | Open a file |
-| `switch <file>` 🔀 | Switch files |
-| `save`, `-s`, `:w` 💾 | Save the current buffer |
-| `-sa`, `wa`, `:wa` 📚 | Save all open buffers |
-| `-sl`, `:wq` 🚪 | Save and quit |
-| `-l`, `:q!` 💨 | Quit without saving |
-| `copy [a-b]` 📋 | Copy lines |
-| `paste` 📥 | Paste clipboard contents |
-| `lsp <cmd>` 🔍 | Request language-server startup |
-| `check <query>` 🤖 | Run an AI-assisted audit |
-| `sh <cmd>` 🖥️ | Execute a shell command |
-| `acel <cmd>` 🎮 | Launch an interactive foreground command |
-| `:funcs` 🧭 | Find matching function declarations |
-| `-bro!` 🦆 | Summon the recovery station |
-| `--im-<mood>` 💭 | Get a mood-related message |
-
----
-
-## 🦆 The legendary Bro! Recovery Station
-
-Listen up, fellow developer.
-
-Have you been staring at the same bug for 47 minutes? Is your code refusing to compile? Has your brain started returning `SegmentationFault` instead of coherent thoughts? 💀
-
-ELIDE has a solution.
+ELIDE has a playful recovery feature for those moments.
 
 ```text
 -bro!
 ```
 
-🎲 **What you get:**
+Depending on the response, you might get a random game suggestion or a small real-world side quest.
 
-- 🎮 A random game recommendation.
-- ⚔️ A side quest.
-- 💧 A reminder to drink water, stretch, or touch grass.
-- 🛌 A completely valid excuse to stop staring at your screen for a bit.
+🎮 Play something.
 
-Feeling a particular way? Try a mood command:
+💧 Drink some water.
+
+🧍 Stretch a little.
+
+🌳 Touch grass.
+
+😴 Take a break when you need one.
+
+You can also try mood-related commands:
 
 ```text
 --im-stuck
@@ -250,21 +236,68 @@ Feeling a particular way? Try a mood command:
 --im-burntout
 ```
 
-The responses are randomized. The bugs, unfortunately, are not. 😭
+The goal isn't to make your editor another productivity coach. It's just a little humor in the middle of a debugging session.
+
+The bugs may be persistent. Your editor doesn't have to be boring. 🦆
 
 ---
 
-## 📦 Installation — let's get cooking
+## ⌨️ Keyboard shortcuts
 
-### 🧰 Prerequisites
+| Shortcut | Action |
+|---|---|
+| `Alt + A` 🤖 | Toggle AI chat |
+| `Alt + T` 🛠️ | Toggle the command palette / terminal pane |
+| `Alt + L` 🔍 | Toggle LSP diagnostics |
+| `Alt + Up` ⬆️ | Scroll the relevant output pane upward |
+| `Alt + Down` ⬇️ | Scroll the relevant output pane downward |
+| `Esc` 🏃 | Close the active pane or return to the editor |
 
-- 🦀 Rust and Cargo.
+Exact behavior may depend on the active pane and current application state.
+
+---
+
+## 🧰 Command palette cheat sheet
+
+Summon the palette with `Alt + T` and use the commands you need.
+
+| Command | Action |
+|---|---|
+| `-s`, `--save`, `save`, `:w` 💾 | Save the current buffer |
+| `-sa`, `--save-all`, `wa`, `:wa` 📚 | Save all buffers |
+| `-l`, `:q!`, `q!`, `quit!` 🚪 | Quit without saving |
+| `-sl`, `:wq`, `wq` 💾 | Save and quit |
+| `-i`, `--info`, `info` ℹ️ | Show editor information |
+| `-h`, `--help`, `help`, `?` 📖 | Show help |
+| `new <file>` 📄 | Create a buffer |
+| `code <file>` 📂 | Open a file |
+| `switch <file>` 🔀 | Switch files |
+| `copy [a-b]` 📋 | Copy the buffer, a line, or a range |
+| `paste` 📥 | Paste clipboard contents |
+| `:funcs` 🧭 | List matching function declarations |
+| `lsp <cmd>` 🔍 | Request LSP startup |
+| `check <query>` 🤖 | Run an AI-assisted check |
+| `sh <cmd>` 🖥️ | Run a shell command |
+| `acel <cmd>` ⚙️ | Run an interactive command |
+| `-bro!` 🦆 | Open the recovery station |
+| `--im-<mood>` 💭 | Show a mood-related message |
+
+The command parser also recognizes several alternative spellings and aliases. Check the current source or help output for the exact behavior of your build.
+
+---
+
+## 📦 Installation
+
+### 🧰 Requirements
+
+- 🦀 Rust and Cargo for building from source.
 - 💻 A compatible terminal environment.
+- ⚙️ The external development tools you want to use.
 - 🔍 Optional: compatible language servers.
-- 🤖 Optional: an AI provider and credentials.
-- 📋 Optional: system clipboard facilities.
+- 🤖 Optional: an AI provider and its configuration.
+- 📋 Optional: clipboard facilities supported by your environment.
 
-Rust 1.70 or newer is the stated minimum; check compatibility with the current dependency versions before relying on that minimum.
+ELIDE is designed to work alongside your toolchain. You generally don't need an IDE to bundle every compiler, debugger, and runtime you might ever use.
 
 ### 🚀 Build from source
 
@@ -273,8 +306,20 @@ git clone https://github.com/tunglamtrannguyen3-cmd/ELIDE.git
 cd ELIDE
 
 cargo build --release
+```
 
+Run the resulting executable:
+
+```bash
 ./target/release/elide
+```
+
+If the executable name or startup behavior differs in your checked-out version, follow the project's current source and build configuration.
+
+### 🧪 Run tests
+
+```bash
+cargo test
 ```
 
 ### 🔬 Run Clippy
@@ -284,80 +329,113 @@ rustup component add clippy
 cargo clippy --all-targets -- -D warnings
 ```
 
-### 🧪 Run tests
-
-```bash
-cargo test
-```
-
-A successful build or lint check is a good sign, not a magical guarantee that every feature works flawlessly on every machine. 🧪
+These commands are useful for checking the project, but a passing build or lint run doesn't guarantee that every integration works on every system.
 
 ---
 
 ## 🧱 Under the hood
 
-| Component | Technology |
+| Component | Technology / approach |
 |---|---|
-| 🦀 Primary language | Rust |
-| 🖥️ Terminal handling | Crossterm |
-| 🤖 AI integration | Asynchronous provider communication |
+| 🦀 Core implementation | Rust |
+| 🖥️ Terminal interface | Crossterm and Ratatui |
+| ⚡ Asynchronous workflows | Tokio |
 | 🔍 Language tooling | Language Server Protocol |
+| 🤖 AI functionality | Configurable provider integration |
 | 📋 Clipboard | System clipboard abstraction and OSC 52 support |
-| ⚙️ Process execution | Shell and interactive command workflows |
-| 🎨 Color system | Custom RGB palette |
+| ⚙️ External tools | Shell and interactive process execution |
+| 🎨 Visual design | Custom RGB palette |
 
-ELIDE's source is organized into focused modules for editing, terminal handling, AI, LSP, clipboard, colors, command parsing, and process execution.
+The project uses Rust's ecosystem to bring terminal interaction, asynchronous operations, error handling, and application functionality together.
 
-The goal is to keep the project understandable and maintainable as it grows. 🛠️
-
----
-
-## 🗺️ The ELIDE philosophy
-
-I built ELIDE around a simple idea:
-
-> 💜 Development tools should help you build software, not become another project you have to maintain.
-
-I want an IDE that respects system resources, keeps useful tools close at hand, and doesn't make the developer fight the environment before getting any actual work done.
-
-ELIDE is my take on that idea: a terminal-first, Rust-powered workspace with its own personality.
-
-It's still evolving. There's room for bugs, improvements, and features I haven't thought of yet.
-
-That's part of building software. 🚀
-
-**Small tools. Big ambitions. One suspiciously powerful duck.** 🦆⚡
+The intention is to keep ELIDE practical, understandable, and open to future development. 🛠️
 
 ---
 
-## 🤝 Join the project
+## 🥊 How does ELIDE compare?
 
-Found a bug? Have a feature idea? Want to help make ELIDE better?
+Different editors solve different problems. Here's where ELIDE fits.
 
-You're welcome to explore the code, report issues, improve the documentation, or contribute changes.
+| Editor | Strength | Trade-off |
+|---|---|---|
+| 🟦 VS Code | Huge extension ecosystem and broad language support | Electron-based architecture; resource use varies with workload and extensions |
+| 🟥 JetBrains IDEs | Powerful language-specific tooling | Some workloads can require substantial memory and indexing time |
+| 🟩 Helix | Terminal-native modal editing and built-in language tooling | Different editing model and learning curve |
+| 🟪 Neovim | Highly customizable and extensible | Advanced configurations can take time to maintain |
+| 🥚 **ELIDE** | Terminal-focused editing, external tools, AI assistance, and LSP workflows | Smaller ecosystem and evolving feature set |
+
+This isn't a scientific performance ranking. Actual resource usage and responsiveness depend on hardware, workload, configuration, and enabled integrations.
+
+ELIDE's goal isn't to win every comparison.
+
+**It's to provide a development environment that fits the way I want to build software—and give other developers room to make it their own.** 💜
+
+---
+
+## 🗺️ The roadmap mindset
+
+ELIDE is an evolving project, not a finished universe.
+
+The long-term direction is to keep improving the core editing experience, tool integration, language-server workflows, AI assistance, and overall usability.
+
+I'm especially interested in making the development environment more useful without forcing users to adopt a single predefined stack.
+
+Feature requests, bug reports, and contributions are welcome. Just remember: ideas are not the same as implemented features, and the actual roadmap should reflect the code that ships.
+
+One step at a time. One bug at a time. One questionable duck at a time. 🦆
+
+---
+
+## 🤝 Contributing
+
+Want to help improve ELIDE? Awesome! 🚀
+
+You can contribute by:
+
+- 🐛 Reporting reproducible bugs.
+- 💡 Suggesting useful features.
+- 📝 Improving documentation.
+- 🧪 Testing changes.
+- 🛠️ Submitting code improvements.
+
+A good bug report includes reproduction steps, expected behavior, actual behavior, and relevant environment details.
+
+Please remove API keys, tokens, and other private information before sharing logs.
+
+### A simple contribution workflow
 
 1. 🍴 Fork the repository.
-2. 🌱 Create a branch.
-3. 🛠️ Make your changes.
-4. 🧪 Test them.
-5. 🚀 Open a pull request.
+2. 🌱 Create a branch for your change.
+3. 🛠️ Implement the improvement.
+4. 🧪 Run relevant tests.
+5. 🚀 Open a pull request describing what changed.
 
-When reporting bugs, include reproduction steps and relevant environment information. Please redact API keys and other secrets from logs.
+🔗 **Repository:** https://github.com/tunglamtrannguyen3-cmd/ELIDE
 
-🔗 **Repository:** [github.com/tunglamtrannguyen3-cmd/ELIDE](https://github.com/tunglamtrannguyen3-cmd/ELIDE)
+---
 
 ## 📄 License
 
-ELIDE is distributed under the **Eggchese Open Project License 2026 (EOPL-2026.2)**.
+ELIDE uses the **Eggchese Open Project License (EOPL-2026.2)**.
 
-📜 See [`LICENSE.md`](LICENSE.md) for the complete terms.
+Please consult the repository's `LICENSE` file for the authoritative license terms.
 
 ---
 
+## 💜 A note from the developer
+
+I built ELIDE around a simple idea: development tools should make building software easier, not make the developer fight the environment before getting started.
+
+I want a terminal IDE that respects the tools people already use, supports different workflows, and has enough personality to feel like more than another generic editor.
+
+It's a project that will keep evolving. There will be things to improve, features to rethink, and bugs to hunt down.
+
+That's software development. You build something, learn from it, and make it better.
+
+Thanks for checking out ELIDE. Whether you're here to use it, explore the code, report a bug, or contribute something new, I appreciate the interest. 💜
+
 <p align="center">
-  <strong>⚡ LESS WAITING. 💻 LESS BLOAT. 🚀 MORE BUILDING.</strong>
+  <strong>🦀 LESS WAITING. 🛠️ MORE CONTROL. 🚀 MORE BUILDING.</strong>
   <br/><br/>
-  🦆 ELIDE — Your terminal, your workflow.
-  <br/><br/>
-  ⭐ If ELIDE looks interesting, check out the repository!
+  <strong>🥚 ELIDE — Your Code. Your Terminal. Your Rules. 🦆</strong>
 </p>
