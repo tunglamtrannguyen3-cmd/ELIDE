@@ -175,7 +175,7 @@ impl LspClient {
     /// Called when the user opens a specific file in the editor
     pub fn open_file(&self, filename: &str, text: &str) -> Result<()> {
         if get_language_id(filename) != self.language_id {
-            return Ok(()); // Do not send unrelated files to the LSP
+            return Ok(());
         }
 
         let did_open_req = json!({
@@ -200,7 +200,7 @@ impl LspClient {
     /// Called when the user types/modifies the file
     pub fn notify_change(&self, filename: &str, version: u32, text: &str) -> Result<()> {
         if get_language_id(filename) != self.language_id {
-            return Ok(()); // Do not send unrelated file changes to the LSP
+            return Ok(());
         }
 
         let did_change_req = json!({
@@ -241,8 +241,7 @@ impl Default for LspClient {
 
 // --- Directory Scanning Logic ---
 
-/// Scans the directory to find the most used language. 
-/// It skips build/dependency directories to stay fast.
+/// Scans the directory recursively to find the most used language.
 pub fn detect_workspace_language(dir: &str) -> Option<&'static str> {
     let path = Path::new(dir);
     let mut ext_counts: HashMap<&'static str, usize> = HashMap::new();
@@ -253,7 +252,6 @@ pub fn detect_workspace_language(dir: &str) -> Option<&'static str> {
                 let path = entry.path();
                 if path.is_dir() {
                     let name = path.file_name().unwrap_or_default().to_string_lossy();
-                    // Skip hidden dirs and common heavy folders
                     if name.starts_with('.') || name == "target" || name == "node_modules" || name == "build" {
                         continue;
                     }
@@ -272,7 +270,6 @@ pub fn detect_workspace_language(dir: &str) -> Option<&'static str> {
 
     visit_dirs(path, &mut ext_counts);
 
-    // Return the language with the highest count
     ext_counts
         .into_iter()
         .max_by_key(|&(_, count)| count)
@@ -319,48 +316,139 @@ fn get_file_uri(filename: &str) -> String {
 
 pub fn get_language_id(filename: &str) -> &'static str {
     let lowercase_name = filename.to_lowercase();
-    if lowercase_name.ends_with("dockerfile") {
+    
+    // ==========================================
+    // 🔀 FILENAME OVERRIDES (No Uniform Extensions)
+    // ==========================================
+    if lowercase_name.ends_with("dockerfile") || lowercase_name.starts_with("dockerfile.") {
         return "dockerfile";
+    }
+    if lowercase_name == "makefile" || lowercase_name.ends_with(".mk") {
+        return "makefile";
+    }
+    if lowercase_name == "jenkinsfile" {
+        return "jenkinsfile";
+    }
+    if lowercase_name == "cmakelists.txt" {
+        return "cmake";
     }
 
     let ext = filename.rsplit('.').next().unwrap_or("");
     match ext {
+        // ==========================================
+        // 🚀 SYSTEMS & NATIVE LANGUAGES
+        // ==========================================
         "rs" => "rust",
+        "zig" => "zig",
         "c" => "c",
         "cpp" | "cxx" | "cc" | "h" | "hpp" => "cpp",
-        "py" => "python",
         "go" => "go",
-        "java" => "java",
+        "d" | "di" => "d",
+        "nim" => "nim",
+        "v" => "v",
+        "asm" | "s" => "assembly",
+
+        // ==========================================
+        // 🎮 GAME DEVELOPMENT & GRAPHICS SHADERS
+        // ==========================================
+        "gd" => "gdscript",
         "cs" => "csharp",
-        "js" | "jsx" => "javascript",
-        "ts" | "tsx" => "typescript",
+        "glsl" | "vert" | "frag" | "geom" | "comp" => "glsl",
+        "hlsl" | "fx" | "hlsli" => "hlsl",
+        "wgsl" => "wgsl",
+        "shader" => "unity-shader",
+        "brres" | "gsh" => "graphics-resource", 
+
+        // ==========================================
+        // ☕ GENERAL PURPOSE & ENTERPRISE
+        // ==========================================
+        "java" => "java",
+        "kt" | "kts" => "kotlin",
+        "scala" | "sc" => "scala",
+        "swift" => "swift",
+        "oc" | "m" | "mm" => "objective-c",
+        "adb" | "ads" | "ada" | "gpr" => "ada",
+
+        // ==========================================
+        // 🐍 SCRIPTING & DYNAMIC LANGUAGES
+        // ==========================================
+        "py" | "pyw" => "python",
+        "rb" | "rbw" | "gemspec" => "ruby",
+        "php" => "php",
+        "pl" | "pm" | "t" => "perl",
+        "lua" => "lua",
+        "tcl" => "tcl",
+
+        // ==========================================
+        // 🌐 WEB DEVELOPMENT (Core, Frameworks, CSS)
+        // ==========================================
+        "js" | "jsx" | "mjs" | "cjs" => "javascript",
+        "ts" | "tsx" | "mts" | "cts" => "typescript",
         "html" | "htm" => "html",
         "css" => "css",
         "scss" => "scss",
         "less" => "less",
-        "php" => "php",
-        "rb" => "ruby",
-        "lua" => "lua",
-        "sh" | "bash" => "bash",
-        "dart" => "dart",
         "svelte" => "svelte",
         "vue" => "vue",
-        "hs" => "haskell",
+        "astro" => "astro",
+        "graphql" | "gql" => "graphql",
+
+        // ==========================================
+        // 🧠 FUNCTIONAL LANGUAGES
+        // ==========================================
+        "hs" | "lhs" => "haskell",
         "ml" | "mli" => "ocaml",
         "ex" | "exs" => "elixir",
         "erl" | "hrl" => "erlang",
-        "json" => "json",
+        "clj" | "cljs" | "edn" => "clojure",
+        "gleam" => "gleam",
+
+        // ==========================================
+        // 📊 DATA SCIENCE, MATH & BLOCKCHAIN
+        // ==========================================
+        "jl" => "julia",
+        "r" | "rmd" => "r",
+        "sol" => "solidity",
+        "move" => "move",
+
+        // ==========================================
+        // 🐚 SHELL & AUTOMATION
+        // ==========================================
+        "sh" | "bash" | "zsh" => "bash",
+        "ps1" | "psm1" => "powershell",
+
+        // ==========================================
+        // 🛠️ DEVOPS, INFRASTRUCTURE & CONFIGS
+        // ==========================================
+        "json" | "jsonc" => "json",
         "yaml" | "yml" => "yaml",
         "toml" => "toml",
+        "ini" | "cfg" | "conf" => "ini",
+        "xml" | "xsd" | "xsl" => "xml",
+        "tf" | "tfvars" => "terraform",
+        "proto" => "protobuf",
+        "env" => "dotenv",
+        "cmake" => "cmake",
+        "nix" => "nix",
+        "dockerfile" | "docker" => "dockerfile",
+        "wit" => "wit",
+
+        // ==========================================
+        // 📝 DATA FILES & DOCUMENTATION
+        // ==========================================
+        "sql" => "sql",
+        "csv" => "csv",
+        "tsv" => "tsv",
         "md" | "markdown" => "markdown",
         "tex" | "latex" => "latex",
-        "dockerfile" | "docker" => "dockerfile",
-        "sql" => "sql",
-        "adb" | "ads" | "ada" | "gpr" => "ada",
-        "swift" => "swift",
-        "nim" => "nim",
-        "kt" | "kts" => "kotlin",
-        "scala" | "sc" => "scala",
+        "rst" => "restructuredtext",
+        "asciidoc" | "adoc" => "asciidoc",
+        "org" => "org",
+        "diff" | "patch" => "diff",
+
+        // ==========================================
+        // 📄 FALLBACK
+        // ==========================================
         _ => "plaintext",
     }
 }

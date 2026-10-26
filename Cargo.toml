@@ -1,10 +1,14 @@
 [package]
 name = "elide"
-version = "2.2.0"
+version = "2.3.0"
 edition = "2021"
-description = "I'mma beat Doom."
-license = "License-Ref-EOPL-2026.2"
+description = "Easier Life @ IDE: A high-performance, ultra-lightweight terminal development environment built in Rust. Designed to protect your RAM, minimize environmental footprint, and preserve developer mental health through built-in recovery stations."
+homepage = "https://github.com/tunglamtrannguyen3-cmd/ELIDE"
 repository = "https://github.com/tunglamtrannguyen3-cmd/ELIDE"
+readme = "README.md"
+license = "License-Ref-EOPL-2026.2"
+keywords = ["ide", "terminal", "ratatui", "lightweight", "developer-wellbeing"]
+categories = ["development-tools::editors", "command-line-utilities"]
 
 [dependencies]
 # Terminal handling

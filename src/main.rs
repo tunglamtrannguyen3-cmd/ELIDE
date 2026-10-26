@@ -77,6 +77,9 @@ struct AppState {
     pub ai_input_buffer: String,
     pub ai_messages: Vec<(String, String)>,
     pub ai_scroll_offset: usize,
+    pub show_symbol_finder: bool,
+    pub symbol_query: String,
+    pub symbol_selected_idx: usize,
 }
 
 impl AppState {
@@ -99,6 +102,9 @@ impl AppState {
             ai_input_buffer: String::new(),
             ai_messages: Vec::new(),
             ai_scroll_offset: 0,
+            show_symbol_finder: false,
+            symbol_query: String::new(),
+            symbol_selected_idx: 0,
         }
     }
 
@@ -117,7 +123,7 @@ impl AppState {
         }
     }
 
-    /// Open or switch to a file while preserving in-memory edits safely
+    /// Open or switch to a file while preserving in-memory edits safely[cite: 3]
     fn open_buffered_file(&mut self, path_str: &str) -> Result<()> {
         self.cache_current_buffer();
         let canonical_path = Self::normalize_path(path_str);
@@ -136,7 +142,7 @@ impl AppState {
         Ok(())
     }
 
-    /// Create or switch to a new buffer while caching the current one
+    /// Create or switch to a new buffer while caching the current one[cite: 3]
     fn new_buffered_file(&mut self, path_str: &str) -> Result<()> {
         self.cache_current_buffer();
         let canonical_path = Self::normalize_path(path_str);
@@ -171,13 +177,21 @@ impl AppState {
 
     async fn handle_input(&mut self, key: crossterm::event::KeyEvent, diag_tx: &mpsc::UnboundedSender<(String, Vec<diagnostics::Diagnostic>)>) -> bool {
         if terminal::is_esc(&key) {
-            if self.show_ai_chat {
+            if self.show_symbol_finder {
+                self.show_symbol_finder = false;
+            } else if self.show_ai_chat {
                 self.show_ai_chat = false;
             } else if self.palette.is_active {
                 self.palette.is_active = false;
             } else {
                 return false;
             }
+        } else if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) && key.code == KeyCode::Char('d') {
+            self.show_symbol_finder = !self.show_symbol_finder;
+            self.symbol_query.clear();
+            self.symbol_selected_idx = 0;
+        } else if self.show_symbol_finder {
+            self.handle_symbol_finder_input(key);
         } else if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) && key.code == KeyCode::Char('a') {
             self.show_ai_chat = !self.show_ai_chat;
         } else if self.show_ai_chat {
@@ -196,6 +210,56 @@ impl AppState {
             self.handle_editor_input(key);
         }
         true
+    }
+
+    fn handle_symbol_finder_input(&mut self, key: crossterm::event::KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.show_symbol_finder = false;
+            }
+            KeyCode::Char(c) => {
+                self.symbol_query.push(c);
+                self.symbol_selected_idx = 0;
+            }
+            KeyCode::Backspace => {
+                self.symbol_query.pop();
+                self.symbol_selected_idx = 0;
+            }
+            KeyCode::Up => {
+                self.symbol_selected_idx = self.symbol_selected_idx.saturating_sub(1);
+            }
+            KeyCode::Down => {
+                let max_matches = self.get_filtered_symbols().len();
+                if max_matches > 0 && self.symbol_selected_idx + 1 < max_matches {
+                    self.symbol_selected_idx += 1;
+                }
+            }
+            KeyCode::Enter => {
+                let matches = self.get_filtered_symbols();
+                if let Some((line_idx, _)) = matches.get(self.symbol_selected_idx) {
+                    self.editor.cursor.row = *line_idx;
+                    self.editor.cursor.col = 0;
+                }
+                self.show_symbol_finder = false;
+            }
+            _ => {}
+        }
+    }
+
+    fn get_filtered_symbols(&self) -> Vec<(usize, String)> {
+        self.editor.lines.iter()
+            .enumerate()
+            .filter_map(|(idx, line)| {
+                let trimmed = line.trim();
+                if trimmed.starts_with("fn ") || trimmed.starts_with("pub fn ") || trimmed.starts_with("async fn ") || trimmed.starts_with("pub async fn ") {
+                    let func_name = trimmed.trim_end_matches('{').trim();
+                    if self.symbol_query.is_empty() || func_name.to_lowercase().contains(&self.symbol_query.to_lowercase()) {
+                        return Some((idx, format!("L{}: {}", idx + 1, func_name)));
+                    }
+                }
+                None
+            })
+            .collect()
     }
 
     async fn handle_ai_chat_input(&mut self, key: crossterm::event::KeyEvent) {
@@ -279,6 +343,34 @@ impl AppState {
                                 Ok(_) => (format!("Created new buffer: {}", filename), true),
                                 Err(e) => (format!("Failed to create {}: {}", filename, e), false),
                             }
+                        }
+                    }
+                    PaletteAction::Tree => {
+                        self.cache_current_buffer();
+                        let curr_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                        match std::fs::read_dir(&curr_dir) {
+                            Ok(entries) => {
+                                let mut lines = vec![
+                                    format!(" Workspace: {}", curr_dir.display()),
+                                    " ──────────────────────────────────────────".to_string(),
+                                    " ../".to_string(),
+                                ];
+                                let mut sorted_entries: Vec<String> = entries.flatten().filter_map(|e| {
+                                    let name = e.file_name().to_string_lossy().to_string();
+                                    if name.starts_with('.') || name == "target" || name == "node_modules" { return None; }
+                                    if e.path().is_dir() { Some(format!("{}/", name)) } else { Some(name.to_string()) }
+                                }).collect();
+                                sorted_entries.sort();
+                                lines.extend(sorted_entries);
+                                self.editor.lines = lines;
+                                self.editor.filename = None;
+                                self.editor.cursor.row = 0;
+                                self.editor.cursor.col = 0;
+                                self.editor.row_offset = 0;
+                                self.editor.col_offset = 0;
+                                ("Returned to workspace file tree.".to_string(), true)
+                            }
+                            Err(e) => (format!("Failed to read workspace directory: {}", e), false),
                         }
                     }
                     PaletteAction::CopyTerm => {
@@ -369,6 +461,8 @@ impl AppState {
                 if self.editor.filename.is_some() {
                     self.editor.backspace();
                     text_changed = true;
+                } else {
+                    self.open_parent_directory();
                 }
             }
             KeyCode::Delete => {
@@ -565,6 +659,7 @@ fn render_ui(stdout: &mut Stdout, state: &mut AppState, layout: &Layout) -> Resu
         draw_terminal_pane(stdout, state, layout)?;
     }
     draw_command_palette(stdout, state, layout)?;
+    draw_symbol_finder_modal(stdout, state, layout)?;
     sync_cursor(stdout, state, layout)?;
     stdout.execute(cursor::Show)?;
     stdout.flush()?;
@@ -730,8 +825,7 @@ fn draw_status_bar(stdout: &mut Stdout, state: &AppState, layout: &Layout) -> Re
     let status_row = (layout.banner_height + layout.editor_height) as u16;
     stdout.execute(cursor::MoveTo(2, status_row))?;
     
-    // Dirty buffer indicator (`[+]` when modified, spaces when clean)
-    let dirty_flag = if state.editor.is_dirty { " [+] " } else { "     " };
+    let dirty_flag = if state.editor.is_dirty { " [+] " } else { "" };
     let status = format!(
         "{}{} | R:{} C:{} | {} ({}) ",
         state.editor.filename.as_deref().unwrap_or("[Workspace]"),
@@ -807,9 +901,61 @@ fn draw_command_palette(stdout: &mut Stdout, state: &AppState, layout: &Layout) 
         stdout.execute(ResetColor)?;
     } else {
         stdout.execute(SetForegroundColor(colors::Palette::COMMENT_GRAY))?;
-        write!(stdout, " : (Alt+T term, Esc close) ")?;
+        write!(stdout, " : (Alt+T term, Alt+D symbols, Esc close) ")?;
         stdout.execute(ResetColor)?;
     }
+    Ok(())
+}
+
+fn draw_symbol_finder_modal(stdout: &mut Stdout, state: &AppState, layout: &Layout) -> Result<()> {
+    if !state.show_symbol_finder {
+        return Ok(());
+    }
+
+    let modal_w = (layout.term_width as usize * 60) / 100;
+    let modal_h = 12;
+    let start_x = (layout.term_width as usize).saturating_sub(modal_w) / 2;
+    let start_y = (layout.term_height as usize).saturating_sub(modal_h) / 2;
+
+    set_border_color(stdout)?;
+    stdout.execute(cursor::MoveTo(start_x as u16, start_y as u16))?;
+    write!(stdout, "╭{}╮", "─".repeat(modal_w.saturating_sub(2)))?;
+
+    for i in 1..modal_h - 1 {
+        stdout.execute(cursor::MoveTo(start_x as u16, (start_y + i) as u16))?;
+        stdout.execute(SetBackgroundColor(colors::Palette::BG_PANEL))?;
+        write!(stdout, "│{}│", " ".repeat(modal_w.saturating_sub(2)))?;
+    }
+
+    stdout.execute(cursor::MoveTo(start_x as u16, (start_y + modal_h - 1) as u16))?;
+    stdout.execute(SetBackgroundColor(colors::Palette::BG_MAIN))?;
+    write!(stdout, "╰{}╯", "─".repeat(modal_w.saturating_sub(2)))?;
+
+    stdout.execute(cursor::MoveTo((start_x + 2) as u16, (start_y + 1) as u16))?;
+    stdout.execute(SetBackgroundColor(colors::Palette::BG_PANEL))?;
+    stdout.execute(SetForegroundColor(colors::Palette::TYPE_YELLOW))?;
+    write!(stdout, "🔍 Function: {}", state.symbol_query)?;
+
+    stdout.execute(cursor::MoveTo((start_x + 1) as u16, (start_y + 2) as u16))?;
+    set_border_color(stdout)?;
+    write!(stdout, "{}", "─".repeat(modal_w.saturating_sub(2)))?;
+
+    let matches = state.get_filtered_symbols();
+    let display_limit = modal_h.saturating_sub(4);
+    for (idx, (_, label)) in matches.iter().take(display_limit).enumerate() {
+        stdout.execute(cursor::MoveTo((start_x + 2) as u16, (start_y + 3 + idx) as u16))?;
+        stdout.execute(SetBackgroundColor(colors::Palette::BG_PANEL))?;
+
+        if idx == state.symbol_selected_idx {
+            stdout.execute(SetForegroundColor(colors::Palette::FUNCTION_BLUE))?;
+            write!(stdout, "► {:<width$}", label, width = modal_w.saturating_sub(5))?;
+        } else {
+            stdout.execute(SetForegroundColor(colors::Palette::TEXT_DEFAULT))?;
+            write!(stdout, "  {:<width$}", label, width = modal_w.saturating_sub(5))?;
+        }
+    }
+
+    stdout.execute(ResetColor)?;
     Ok(())
 }
 
@@ -832,7 +978,7 @@ fn sync_cursor(stdout: &mut Stdout, state: &AppState, layout: &Layout) -> Result
 async fn main() -> Result<()> {
     let _guard = terminal::TerminalGuard::init()?;
     let tracer = tracer::KernelTracer::init();
-    tracer.log_event("ELIDE Editor Initialized!");
+    tracer.log_event("ELIDE v2.3.0 Initialized!");
 
     let mut stdout = stdout();
     let mut state = AppState::new();
