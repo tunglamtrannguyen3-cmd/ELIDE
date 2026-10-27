@@ -285,7 +285,7 @@ impl Palette {
                      - Skills        : Systems Programming, Rust, C, Ada, Micro-skills, Cooking, Chess, Touhou on Lunatic\n\
                      -----------------------------------\n\
                      ℹ️ [EDITOR INFO]\n\
-                     - Version       : v2.3.0\n\
+                     - Version       : v2.3.1\n\
                      - Target File   : {}\n\
                      - Total Lines   : {}\n\
                      - Cursor Pos    : Row {}, Col {}\n\
@@ -300,49 +300,51 @@ impl Palette {
                 (info, true)
             }
             PaletteAction::Help => (
-                "📖 [ELIDE v2.3.0 COMMAND PALETTE MANUAL]\n\n\
+                "📖 [ELIDE v2.3.1 COMMAND PALETTE MANUAL]\n\n\
                  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\
                  ⌨️ QUICK HOTKEYS:\n\
-                   • Alt+T                        - Toggle terminal / command palette\n\
-                   • Alt+A                        - Toggle AI Chatbot Assistant\n\
-                   • Alt+L                        - Toggle LSP diagnostics pane\n\
-                   • Alt+D                        - Toggle interactive function/symbol modal\n\n\
+                 - Alt+T                        - Toggle terminal / command palette\n\
+                 - Alt+A                        - Toggle AI Chatbot Assistant\n\
+                 - Alt+L                        - Toggle LSP diagnostics pane\n\
+                 - Alt+D                        - Toggle interactive function/symbol modal\n\n\
                  📂 FILE & WORKSPACE NAVIGATION:\n\
-                   • tree / :tree / workspace     - Open workspace file tree browser\n\
-                   • new <file>                   - Create and open a new buffer file\n\
-                   • code <file> / switch <file>  - Switch to or open an existing file\n\n\
+                 - tree / :tree / workspace     - Open workspace file tree browser\n\
+                 - new <file>                   - Create and open a new buffer file\n\
+                 - code <file> / switch <file>  - Switch to or open an existing file\n\n\
                  💾 FILE SAVING & EXITING:\n\
-                   • :w / save / -s [file]        - Save current buffer to disk\n\
-                   • wa / :wa / -sa               - Save all open buffers in cache\n\
-                   • :wq / wq / -sl               - Save all buffers and quit editor\n\
-                   • :q! / q! / -l                - Quit editor without saving changes\n\n\
+                 - :w / save / -s [file]        - Save current buffer to disk\n\
+                 - wa / :wa / -sa               - Save all open buffers in cache\n\
+                 - :wq / wq / -sl               - Save all buffers and quit editor\n\
+                 - :q! / q! / -l                - Quit editor without saving changes\n\n\
                  🔍 SEARCH & CODE EXPLORATION:\n\
-                   • search <term> / / <term>     - Nano-style word search in buffer\n\
-                   • :funcs                       - List all function signatures in buffer\n\n\
+                 - search <term> / / <term>     - Nano-style word search in buffer\n\
+                 - :funcs                       - List all function signatures in buffer\n\n\
                  📋 CLIPBOARD MANAGEMENT:\n\
-                   • copy [a-b]                   - Copy entire buffer or line range a-b\n\
-                   • copy term / copy log         - Copy full terminal/command history\n\
-                   • copy lsp                     - Copy active LSP diagnostics\n\
-                   • paste / \"+p                 - Paste from system clipboard\n\n\
+                 - copy [a-b]                   - Copy entire buffer or line range a-b\n\
+                 - copy term / copy log         - Copy full terminal/command history\n\
+                 - copy lsp                     - Copy active LSP diagnostics\n\
+                 - paste / \"+p                 - Paste from system clipboard\n\n\
                  🤖 AI AUDIT & PROCESSES:\n\
-                   • check <query>                - Run AI audit or query check\n\
-                   • lsp <cmd>                    - Initialize Language Server Protocol process\n\
-                   • sh <cmd> / !# <cmd>          - Execute background Bash shell command\n\
-                   • acel <cmd> / /! <cmd>        - Run interactive foreground process\n\n\
+                 - check <token> <url> [model]  - Connect AI backend (Groq/OpenAI/Ollama)\n\
+                 - check <query>                - Run workspace AI audit or query check\n\
+                 - lsp <cmd>                    - Initialize Language Server Protocol process\n\
+                 - sh <cmd> / !# <cmd>          - Execute background Bash shell command\n\
+                 - acel <cmd> / /! <cmd>        - Run interactive foreground process\n\n\
                  ☕ WELLNESS & RECOVERY (FULL --im CMDS):\n\
-                   • -bro! / bro                  - Open developer recovery & side quest station\n\
-                   • --im-stuck                   - Get unstuck debugging advice\n\
-                   • --im-bored                   - Get fun coding challenges & game ideas\n\
-                   • --im-hungry                  - Food break reminders\n\
-                   • --im-tired                   - Sleep & rest optimization tips\n\
-                   • --im-stressed                - Breathing & anxiety relief steps\n\
-                   • --im-burntout                - Mental health & recharge guide\n\
-                   • --im-confused                - Rubber duck refactoring tips\n\
-                   • --im-angry                   - Cool down advice for rage bugs\n\
-                   • --im-lonely                  - Friendly developer motivation"
+                 - -bro! / bro                  - Open developer recovery & side quest station\n\
+                 - --im-stuck                   - Get unstuck debugging advice\n\
+                 - --im-bored                   - Get fun coding challenges & game ideas\n\
+                 - --im-hungry                  - Food break reminders\n\
+                 - --im-tired                   - Sleep & rest optimization tips\n\
+                 - --im-stressed                - Breathing & anxiety relief steps\n\
+                 - --im-burntout                - Mental health & recharge guide\n\
+                 - --im-confused                - Rubber duck refactoring tips\n\
+                 - --im-angry                   - Cool down advice for rage bugs\n\
+                 - --im-lonely                  - Friendly developer motivation"
                     .to_string(),
                 true,
             ),
+
             PaletteAction::Funcs => {
                 let funcs: Vec<String> = editor.lines.iter()
                     .enumerate()

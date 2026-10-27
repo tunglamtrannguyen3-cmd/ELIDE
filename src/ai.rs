@@ -18,9 +18,9 @@ impl AiConfig {
         Self {
             api_key: std::env::var("AI_API_KEY").unwrap_or_default(),
             api_url: std::env::var("AI_API_URL")
-                .unwrap_or_else(|_| "https://api.deepseek.com/v1/chat/completions".to_string()),
+                .unwrap_or_else(|_| "https://api.groq.com/openai/v1/chat/completions".to_string()),
             model: std::env::var("AI_MODEL")
-                .unwrap_or_else(|_| "deepseek-coder".to_string()),
+                .unwrap_or_else(|_| "llama-3.3-70b-versatile".to_string()), // Defaulted to Llama 3.3 70B
         }
     }
 }
@@ -68,28 +68,40 @@ pub struct ChatResponse {
 }
 
 pub async fn run_check(workspace_root: &Path, input: &str) -> Result<String, String> {
-    // 1. Configure credentials on the fly if input contains a URL
-    if input.contains("http://") || input.contains("https://") {
-        let mut config = get_config().lock().map_err(|e| format!("Lock error: {}", e))?;
-        let parts: Vec<&str> = input.split_whitespace().collect();
+    let input_trimmed = input.trim();
+
+    // 1. SETUP STEP: Detect connection command containing an endpoint URL
+    if input_trimmed.contains("http://") || input_trimmed.contains("https://") {
+        let parts: Vec<&str> = input_trimmed.split_whitespace().collect();
         if parts.len() >= 2 {
+            let mut config = get_config().lock().map_err(|e| format!("Lock error: {}", e))?;
             config.api_key = parts[0].to_string();
             config.api_url = parts[1].to_string();
-            return Ok(format!("🔑 Connected successfully!\nEndpoint: {}", config.api_url));
+
+            // Optional 3rd argument allows overriding the model if desired
+            if parts.len() >= 3 {
+                config.model = parts[2].to_string();
+            }
+
+            return Ok(format!(
+                "🔑 Connection saved successfully!\n- Endpoint: {}\n- Model: {}\n\nYou can now run 'check <your prompt>' to audit your workspace.",
+                config.api_url, config.model
+            ));
         } else {
-            return Err("Usage for connection: check <token> <url>".to_string());
+            return Err("Usage for connection: check <token> <url> [model]".to_string());
         }
     }
 
+    // 2. READ CONFIGURATION: Verify credentials before handling prompt
     let (api_key, api_url, model) = {
         let config = get_config().lock().map_err(|e| format!("Lock error: {}", e))?;
         if config.api_key.is_empty() && !config.api_url.contains("localhost") {
-            return Err("Not connected! Run 'check <token> <url>' first.".to_string());
+            return Err("❌ AI Not Connected!\nPlease configure your credentials first using:\ncheck <token> <url> [model]".to_string());
         }
         (config.api_key.clone(), config.api_url.clone(), config.model.clone())
-    }; // Lock dropped here before any await!
+    }; // Lock safely dropped before await!
 
-    // 2. Gather workspace files using .gitignore-aware walk
+    // 3. EXECUTE PROMPT: Gather workspace files using gitignore-aware walker
     let mut code_context = String::new();
     let walker = WalkBuilder::new(workspace_root)
         .hidden(true)
@@ -121,7 +133,7 @@ pub async fn run_check(workspace_root: &Path, input: &str) -> Result<String, Str
     }
 
     let system_prompt = format!(
-        "You are ELIDE AI, a friendly and expert systems programming co-pilot integrated into the ELIDE text editor (v2.1.2).\n\
+        "You are ELIDE AI, a friendly and expert systems programming co-pilot integrated into the ELIDE text editor (v2.3.1).\n\
          You have access to the user's complete workspace codebase context below:\n\n\
          {}\n\n\
          Be conversational, clear, and direct. When reviewing code, balance technical rigor with an encouraging tone. \
@@ -138,7 +150,7 @@ pub async fn run_check(workspace_root: &Path, input: &str) -> Result<String, Str
             },
             ChatMessage {
                 role: "user".to_string(),
-                content: input.to_string(),
+                content: input_trimmed.to_string(),
             },
         ],
         temperature: Some(0.2),
@@ -178,16 +190,16 @@ pub async fn run_chat_stream(root: &Path, history: Vec<(String, String)>) -> Res
     let (api_key, api_url, model) = {
         let config = get_config().lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
         if config.api_key.is_empty() && !config.api_url.contains("localhost") {
-            anyhow::bail!("AI API Key is missing. Set AI_API_KEY or run 'check <token> <url>' first.");
+            anyhow::bail!("AI API Key is missing. Run 'check <token> <url> [model]' first.");
         }
         (config.api_key.clone(), config.api_url.clone(), config.model.clone())
-    }; // Lock dropped here before any await!
+    };
 
     let mut messages = vec![
         ChatMessage {
             role: "system".to_string(),
             content: format!(
-                "You are ELIDE AI, a friendly and expert systems programming co-pilot integrated into the ELIDE text editor (v2.1.2). \
+                "You are ELIDE AI, a friendly and expert systems programming co-pilot integrated into the ELIDE text editor (v2.3.1). \
                 The current workspace root is: {}. Be conversational, helpful, and natural when helping the user write, debug, and understand code.",
                 root.display()
             ),
