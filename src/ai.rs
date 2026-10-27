@@ -1,11 +1,11 @@
 // src/ai.rs
+use anyhow::{Context, Result};
 use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
-use anyhow::{Result, Context};
 
 pub struct AiConfig {
     pub api_key: String,
@@ -20,7 +20,7 @@ impl AiConfig {
             api_url: std::env::var("AI_API_URL")
                 .unwrap_or_else(|_| "https://api.groq.com/openai/v1/chat/completions".to_string()),
             model: std::env::var("AI_MODEL")
-                .unwrap_or_else(|_| "llama-3.3-70b-versatile".to_string()), // Defaulted to Llama 3.3 70B
+                .unwrap_or_else(|_| "openai/gpt-oss-20b".to_string()),
         }
     }
 }
@@ -78,7 +78,6 @@ pub async fn run_check(workspace_root: &Path, input: &str) -> Result<String, Str
             config.api_key = parts[0].to_string();
             config.api_url = parts[1].to_string();
 
-            // Optional 3rd argument allows overriding the model if desired
             if parts.len() >= 3 {
                 config.model = parts[2].to_string();
             }
@@ -99,9 +98,9 @@ pub async fn run_check(workspace_root: &Path, input: &str) -> Result<String, Str
             return Err("❌ AI Not Connected!\nPlease configure your credentials first using:\ncheck <token> <url> [model]".to_string());
         }
         (config.api_key.clone(), config.api_url.clone(), config.model.clone())
-    }; // Lock safely dropped before await!
+    };
 
-    // 3. EXECUTE PROMPT: Gather workspace files using gitignore-aware walker
+    // 3. EXECUTE PROMPT: Gather workspace files safely with length clamping
     let mut code_context = String::new();
     let walker = WalkBuilder::new(workspace_root)
         .hidden(true)
@@ -122,6 +121,12 @@ pub async fn run_check(workspace_root: &Path, input: &str) -> Result<String, Str
                             "\n--- FILE: {} ---\n{}\n",
                             rel_path, content
                         ));
+
+                        // Character limit clamp to prevent token size errors
+                        if code_context.len() > 6000 {
+                            code_context.push_str("\n[Context truncated due to size limits...]\n");
+                            break;
+                        }
                     }
                 }
             }
@@ -132,28 +137,22 @@ pub async fn run_check(workspace_root: &Path, input: &str) -> Result<String, Str
         return Err("No valid source files found in workspace to audit.".to_string());
     }
 
-    let system_prompt = format!(
-        "You are ELIDE AI, a friendly and expert systems programming co-pilot integrated into the ELIDE text editor (v2.3.1).\n\
-         You have access to the user's complete workspace codebase context below:\n\n\
-         {}\n\n\
-         Be conversational, clear, and direct. When reviewing code, balance technical rigor with an encouraging tone. \
-         If the user asks general questions or wants to brainstorm, chat naturally.",
-        code_context
-    );
+    // Short, savage pre-prompt
+    let system_prompt = "You are ELIDE AI, a code auditor with zero patience for bad code. Be brutally direct, witty, and savage in your review.";
 
     let payload = ChatRequest {
         model,
         messages: vec![
             ChatMessage {
                 role: "system".to_string(),
-                content: system_prompt,
+                content: system_prompt.to_string(),
             },
             ChatMessage {
                 role: "user".to_string(),
-                content: input_trimmed.to_string(),
+                content: format!("Workspace Files:\n{}\n\nUser Prompt: {}", code_context, input_trimmed),
             },
         ],
-        temperature: Some(0.2),
+        temperature: Some(0.3),
         stream: None,
     };
 
