@@ -108,14 +108,10 @@ impl AppState {
         }
     }
 
-    /// Normalize path to prevent cache mismatches
     fn normalize_path(path_str: &str) -> String {
-        std::fs::canonicalize(path_str)
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|_| path_str.to_string())
+        std::fs::canonicalize(path_str).map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|_| path_str.to_string())
     }
 
-    /// Save current active buffer lines to memory cache before switching
     fn cache_current_buffer(&mut self) {
         if let Some(ref filename) = self.editor.filename {
             let key = Self::normalize_path(filename);
@@ -123,7 +119,6 @@ impl AppState {
         }
     }
 
-    /// Open or switch to a file while preserving in-memory edits safely[cite: 3]
     fn open_buffered_file(&mut self, path_str: &str) -> Result<()> {
         self.cache_current_buffer();
         let canonical_path = Self::normalize_path(path_str);
@@ -142,7 +137,6 @@ impl AppState {
         Ok(())
     }
 
-    /// Create or switch to a new buffer while caching the current one[cite: 3]
     fn new_buffered_file(&mut self, path_str: &str) -> Result<()> {
         self.cache_current_buffer();
         let canonical_path = Self::normalize_path(path_str);
@@ -192,7 +186,7 @@ impl AppState {
             self.symbol_selected_idx = 0;
         } else if self.show_symbol_finder {
             self.handle_symbol_finder_input(key);
-        } else if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) && key.code == KeyCode::Char('a') {
+        } else if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) && key.code == KeyCode::Char('a') {
             self.show_ai_chat = !self.show_ai_chat;
         } else if self.show_ai_chat {
             self.handle_ai_chat_input(key).await;
@@ -214,9 +208,7 @@ impl AppState {
 
     fn handle_symbol_finder_input(&mut self, key: crossterm::event::KeyEvent) {
         match key.code {
-            KeyCode::Esc => {
-                self.show_symbol_finder = false;
-            }
+            KeyCode::Esc => { self.show_symbol_finder = false; }
             KeyCode::Char(c) => {
                 self.symbol_query.push(c);
                 self.symbol_selected_idx = 0;
@@ -247,19 +239,16 @@ impl AppState {
     }
 
     fn get_filtered_symbols(&self) -> Vec<(usize, String)> {
-        self.editor.lines.iter()
-            .enumerate()
-            .filter_map(|(idx, line)| {
-                let trimmed = line.trim();
-                if trimmed.starts_with("fn ") || trimmed.starts_with("pub fn ") || trimmed.starts_with("async fn ") || trimmed.starts_with("pub async fn ") {
-                    let func_name = trimmed.trim_end_matches('{').trim();
-                    if self.symbol_query.is_empty() || func_name.to_lowercase().contains(&self.symbol_query.to_lowercase()) {
-                        return Some((idx, format!("L{}: {}", idx + 1, func_name)));
-                    }
+        self.editor.lines.iter().enumerate().filter_map(|(idx, line)| {
+            let trimmed = line.trim();
+            if trimmed.starts_with("fn ") || trimmed.starts_with("pub fn ") || trimmed.starts_with("async fn ") || trimmed.starts_with("pub async fn ") {
+                let func_name = trimmed.trim_end_matches('{').trim();
+                if self.symbol_query.is_empty() || func_name.to_lowercase().contains(&self.symbol_query.to_lowercase()) {
+                    return Some((idx, format!("L{}: {}", idx+1, func_name)));
                 }
-                None
-            })
-            .collect()
+            }
+            None
+        }).collect()
     }
 
     async fn handle_ai_chat_input(&mut self, key: crossterm::event::KeyEvent) {
@@ -268,9 +257,24 @@ impl AppState {
                 let prompt = self.ai_input_buffer.trim().to_string();
                 self.ai_input_buffer.clear();
                 if !prompt.is_empty() {
-                    self.ai_messages.push(("user".to_string(), prompt.clone()));
+                    let mut full_prompt = prompt;
+                    if !self.current_diagnostics.is_empty() {
+                        full_prompt.push_str("\n\n--- Current Compiler / LSP Diagnostics Log ---");
+                        let mut sorted_uris: Vec<_> = self.current_diagnostics.keys().collect();
+                        sorted_uris.sort();
+                        for uri in sorted_uris {
+                            let diags = &self.current_diagnostics[uri];
+                            let filename = uri.rsplit('/').next().unwrap_or(uri);
+                            for diag in diags {
+                                full_prompt.push_str(&format!("\n- {}:L{}: {}", filename, diag.line, diag.message));
+                            }
+                        }
+                    }
+
+                    self.ai_messages.push(("user".to_string(), full_prompt));
                     let root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
                     let messages = self.ai_messages.clone();
+
                     match crate::ai::run_chat_stream(&root, messages).await {
                         Ok(response) => {
                             self.ai_messages.push(("assistant".to_string(), response));
@@ -282,7 +286,7 @@ impl AppState {
                 }
             }
             KeyCode::Char(c) => self.ai_input_buffer.push(c),
-            KeyCode::Backspace => { self.ai_input_buffer.pop(); },
+            KeyCode::Backspace => { self.ai_input_buffer.pop(); }
             KeyCode::Up => self.ai_scroll_offset = self.ai_scroll_offset.saturating_add(1),
             KeyCode::Down => self.ai_scroll_offset = self.ai_scroll_offset.saturating_sub(1),
             _ => {}
@@ -303,7 +307,6 @@ impl AppState {
                     PaletteAction::SetLsp(cmd) if !cmd.is_empty() => Some(cmd.clone()),
                     _ => None,
                 };
-
                 let (msg, success) = match action.clone() {
                     PaletteAction::SaveAll => {
                         match self.save_all_buffers() {
@@ -374,10 +377,7 @@ impl AppState {
                         }
                     }
                     PaletteAction::CopyTerm => {
-                        let text_to_copy = self.command_history.iter()
-                            .map(|(msg, _)| msg.clone())
-                            .collect::<Vec<String>>()
-                            .join("\n");
+                        let text_to_copy = self.command_history.iter().map(|(msg, _)| msg.clone()).collect::<Vec<String>>().join("\n");
                         self.clipboard = text_to_copy.clone();
                         let mut clip_mgr = clipboard::SystemClipboard::new();
                         match clip_mgr.set_text(&text_to_copy) {
@@ -430,12 +430,11 @@ impl AppState {
                         }
                     }
                 }
-
                 self.command_history.push((msg, success));
                 self.palette.input_buffer.clear();
             }
             KeyCode::Char(c) => self.palette.input_buffer.push(c),
-            KeyCode::Backspace => { self.palette.input_buffer.pop(); },
+            KeyCode::Backspace => { self.palette.input_buffer.pop(); }
             _ => {}
         }
     }
@@ -477,7 +476,6 @@ impl AppState {
             KeyCode::Down => self.editor.move_cursor(1, 0),
             _ => {}
         }
-
         if text_changed {
             if let Some(ref filename) = self.editor.filename {
                 self.doc_version += 1;
@@ -540,7 +538,6 @@ impl AppState {
                     sorted_entries.sort();
                     lines.extend(sorted_entries);
                     self.editor.lines = lines;
-                    self.editor.filename = None;
                     self.editor.cursor.row = 0;
                     self.editor.cursor.col = 0;
                 }
@@ -579,9 +576,7 @@ impl Layout {
         } else {
             0
         };
-        let editor_height = (term_height as usize)
-            .saturating_sub(term_pane_height)
-            .saturating_sub(banner_height + status_height + palette_height);
+        let editor_height = (term_height as usize).saturating_sub(term_pane_height).saturating_sub(banner_height + status_height + palette_height);
         let debug_width = if state.show_lsp_pane {
             ((term_width as usize) * 25) / 100
         } else {
@@ -657,6 +652,8 @@ fn render_ui(stdout: &mut Stdout, state: &mut AppState, layout: &Layout) -> Resu
     draw_status_bar(stdout, state, layout)?;
     if state.palette.is_active && layout.term_pane_height > 0 {
         draw_terminal_pane(stdout, state, layout)?;
+    } else if state.show_ai_chat && layout.term_pane_height > 0 {
+        draw_ai_chat_pane(stdout, state, layout)?;
     }
     draw_command_palette(stdout, state, layout)?;
     draw_symbol_finder_modal(stdout, state, layout)?;
@@ -686,13 +683,8 @@ fn draw_editor(stdout: &mut Stdout, state: &AppState, layout: &Layout) -> Result
             write!(stdout, "{:3}", row + 1)?;
             set_border_color(stdout)?;
             write!(stdout, "│ ")?;
-
             let trimmed = line.trim();
-            let is_function_header = trimmed.starts_with("fn ") 
-                || trimmed.starts_with("pub fn ") 
-                || trimmed.starts_with("async fn ")
-                || trimmed.starts_with("pub async fn ");
-
+            let is_function_header = trimmed.starts_with("fn ") || trimmed.starts_with("pub fn ") || trimmed.starts_with("async fn ") || trimmed.starts_with("pub async fn ");
             if is_function_header {
                 stdout.execute(SetForegroundColor(colors::Palette::SOFT_NAVY))?;
                 write!(stdout, "{}", display_line)?;
@@ -754,7 +746,7 @@ fn draw_lsp_pane(stdout: &mut Stdout, state: &mut AppState, layout: &Layout) -> 
         let y = (layout.banner_height + i) as u16;
         stdout.execute(cursor::MoveTo(debug_x, y))?;
         stdout.execute(SetBackgroundColor(colors::Palette::BG_PANEL))?;
-        write!(stdout, "{}", " ".repeat(layout.debug_width - 1))?;
+        write!(stdout, "{}", "".repeat(layout.debug_width - 1))?;
         stdout.execute(SetBackgroundColor(colors::Palette::BG_MAIN))?;
     }
     stdout.execute(cursor::MoveTo(debug_x + 1, 1))?;
@@ -784,15 +776,10 @@ fn draw_lsp_pane(stdout: &mut Stdout, state: &mut AppState, layout: &Layout) -> 
                         Some(3) | Some(4) => colors::Status::Hint,
                         _ => {
                             let msg_lower = diag.message.to_lowercase();
-                            if msg_lower.contains("error") {
-                                colors::Status::Error
-                            } else if msg_lower.contains("warn") {
-                                colors::Status::Warning
-                            } else if msg_lower.contains("hint") || msg_lower.contains("info") {
-                                colors::Status::Hint
-                            } else {
-                                colors::Status::Error
-                            }
+                            if msg_lower.contains("error") { colors::Status::Error }
+                            else if msg_lower.contains("warn") { colors::Status::Warning }
+                            else if msg_lower.contains("hint") || msg_lower.contains("info") { colors::Status::Hint }
+                            else { colors::Status::Error }
                         }
                     };
                     let full_msg = format!("{}:L{}: {}", filename, diag.line, diag.message);
@@ -824,7 +811,6 @@ fn draw_lsp_pane(stdout: &mut Stdout, state: &mut AppState, layout: &Layout) -> 
 fn draw_status_bar(stdout: &mut Stdout, state: &AppState, layout: &Layout) -> Result<()> {
     let status_row = (layout.banner_height + layout.editor_height) as u16;
     stdout.execute(cursor::MoveTo(2, status_row))?;
-    
     let dirty_flag = if state.editor.is_dirty { " [+] " } else { "" };
     let status = format!(
         "{}{} | R:{} C:{} | {} ({}) ",
@@ -848,7 +834,7 @@ fn draw_terminal_pane(stdout: &mut Stdout, state: &AppState, layout: &Layout) ->
         let y = term_start_row + i as u16;
         stdout.execute(cursor::MoveTo(1, y))?;
         stdout.execute(SetBackgroundColor(colors::Palette::BG_PANEL))?;
-        write!(stdout, "{}", " ".repeat(layout.term_width.saturating_sub(2) as usize))?;
+        write!(stdout, "{}", "".repeat(layout.term_width.saturating_sub(2) as usize))?;
     }
     let mut display_history = Vec::new();
     for (msg, success) in &state.command_history {
@@ -892,6 +878,65 @@ fn draw_terminal_pane(stdout: &mut Stdout, state: &AppState, layout: &Layout) ->
     Ok(())
 }
 
+fn draw_ai_chat_pane(stdout: &mut Stdout, state: &AppState, layout: &Layout) -> Result<()> {
+    let status_row = (layout.banner_height + layout.editor_height) as u16;
+    let term_start_row = status_row + 1;
+
+    for i in 0..layout.term_pane_height {
+        let y = term_start_row + i as u16;
+        stdout.execute(cursor::MoveTo(1, y))?;
+        stdout.execute(SetBackgroundColor(colors::Palette::BG_PANEL))?;
+        write!(stdout, "{}", " ".repeat(layout.term_width.saturating_sub(2) as usize))?;
+    }
+
+    stdout.execute(cursor::MoveTo(2, term_start_row))?;
+    stdout.execute(SetBackgroundColor(colors::Palette::BG_PANEL))?;
+    stdout.execute(SetForegroundColor(colors::Palette::FUNCTION_BLUE))?;
+    write!(stdout, "💬 ELIDE AI Auditor Chat (Ctrl+A to close)")?;
+    stdout.execute(ResetColor)?;
+
+    let max_display_lines = layout.term_pane_height.saturating_sub(2);
+    let mut display_lines = Vec::new();
+
+    for (role, msg) in &state.ai_messages {
+        let prefix = if role == "user" { "You: " } else { "ELIDE: " };
+        for line in msg.lines() {
+            display_lines.push(format!("{}{}", prefix, line));
+        }
+    }
+
+    display_lines.push(format!("> {}", state.ai_input_buffer));
+
+    let max_scroll = display_lines.len().saturating_sub(max_display_lines);
+    let scroll = state.ai_scroll_offset.min(max_scroll);
+    let max_width = layout.term_width.saturating_sub(4) as usize;
+
+    for (idx, line) in display_lines.iter().skip(scroll).take(max_display_lines).enumerate() {
+        stdout.execute(cursor::MoveTo(2, term_start_row + 1 + idx as u16))?;
+        stdout.execute(SetBackgroundColor(colors::Palette::BG_PANEL))?;
+        
+        let chars: Vec<char> = line.chars().collect();
+        let display_str: String = if chars.len() > max_width {
+            chars.into_iter().take(max_width).collect()
+        } else {
+            line.clone()
+        };
+
+        if line.starts_with("ELIDE:") {
+            stdout.execute(SetForegroundColor(colors::Palette::STRING_GREEN))?;
+        } else if line.starts_with("You:") {
+            stdout.execute(SetForegroundColor(colors::Palette::TYPE_YELLOW))?;
+        } else {
+            stdout.execute(SetForegroundColor(colors::Palette::TEXT_DEFAULT))?;
+        }
+
+        write!(stdout, "{}", display_str)?;
+        stdout.execute(ResetColor)?;
+    }
+
+    Ok(())
+}
+
 fn draw_command_palette(stdout: &mut Stdout, state: &AppState, layout: &Layout) -> Result<()> {
     let bottom_y = layout.term_height.saturating_sub(1);
     stdout.execute(cursor::MoveTo(2, bottom_y))?;
@@ -901,60 +946,49 @@ fn draw_command_palette(stdout: &mut Stdout, state: &AppState, layout: &Layout) 
         stdout.execute(ResetColor)?;
     } else {
         stdout.execute(SetForegroundColor(colors::Palette::COMMENT_GRAY))?;
-        write!(stdout, " : (Alt+T term, Alt+D symbols, Esc close) ")?;
+        write!(stdout, " : (Ctrl+A AI chat, Alt+T term, Alt+D symbols, Esc close) ")?;
         stdout.execute(ResetColor)?;
     }
     Ok(())
 }
 
 fn draw_symbol_finder_modal(stdout: &mut Stdout, state: &AppState, layout: &Layout) -> Result<()> {
-    if !state.show_symbol_finder {
-        return Ok(());
-    }
-
+    if !state.show_symbol_finder { return Ok(()); }
     let modal_w = (layout.term_width as usize * 60) / 100;
     let modal_h = 12;
     let start_x = (layout.term_width as usize).saturating_sub(modal_w) / 2;
     let start_y = (layout.term_height as usize).saturating_sub(modal_h) / 2;
-
     set_border_color(stdout)?;
     stdout.execute(cursor::MoveTo(start_x as u16, start_y as u16))?;
     write!(stdout, "╭{}╮", "─".repeat(modal_w.saturating_sub(2)))?;
-
     for i in 1..modal_h - 1 {
         stdout.execute(cursor::MoveTo(start_x as u16, (start_y + i) as u16))?;
         stdout.execute(SetBackgroundColor(colors::Palette::BG_PANEL))?;
-        write!(stdout, "│{}│", " ".repeat(modal_w.saturating_sub(2)))?;
+        write!(stdout, "│{}│", "".repeat(modal_w.saturating_sub(2)))?;
     }
-
     stdout.execute(cursor::MoveTo(start_x as u16, (start_y + modal_h - 1) as u16))?;
     stdout.execute(SetBackgroundColor(colors::Palette::BG_MAIN))?;
     write!(stdout, "╰{}╯", "─".repeat(modal_w.saturating_sub(2)))?;
-
     stdout.execute(cursor::MoveTo((start_x + 2) as u16, (start_y + 1) as u16))?;
     stdout.execute(SetBackgroundColor(colors::Palette::BG_PANEL))?;
     stdout.execute(SetForegroundColor(colors::Palette::TYPE_YELLOW))?;
     write!(stdout, "🔍 Function: {}", state.symbol_query)?;
-
     stdout.execute(cursor::MoveTo((start_x + 1) as u16, (start_y + 2) as u16))?;
     set_border_color(stdout)?;
     write!(stdout, "{}", "─".repeat(modal_w.saturating_sub(2)))?;
-
     let matches = state.get_filtered_symbols();
     let display_limit = modal_h.saturating_sub(4);
     for (idx, (_, label)) in matches.iter().take(display_limit).enumerate() {
         stdout.execute(cursor::MoveTo((start_x + 2) as u16, (start_y + 3 + idx) as u16))?;
         stdout.execute(SetBackgroundColor(colors::Palette::BG_PANEL))?;
-
         if idx == state.symbol_selected_idx {
             stdout.execute(SetForegroundColor(colors::Palette::FUNCTION_BLUE))?;
             write!(stdout, "► {:<width$}", label, width = modal_w.saturating_sub(5))?;
         } else {
             stdout.execute(SetForegroundColor(colors::Palette::TEXT_DEFAULT))?;
-            write!(stdout, "  {:<width$}", label, width = modal_w.saturating_sub(5))?;
+            write!(stdout, "{:<width$}", label, width = modal_w.saturating_sub(5))?;
         }
     }
-
     stdout.execute(ResetColor)?;
     Ok(())
 }
@@ -1020,9 +1054,7 @@ async fn main() -> Result<()> {
 
     let mut needs_redraw = true;
     loop {
-        if state.should_exit {
-            break;
-        }
+        if state.should_exit { break; }
 
         while let Ok((uri, diags)) = diag_rx.try_recv() {
             if diags.is_empty() {
@@ -1051,6 +1083,8 @@ async fn main() -> Result<()> {
                 needs_redraw = true;
                 if state.palette.is_active {
                     state.palette.input_buffer.push_str(&text);
+                } else if state.show_ai_chat {
+                    state.ai_input_buffer.push_str(&text);
                 } else if state.editor.filename.is_some() {
                     for c in text.chars() {
                         if c == '\n' {
@@ -1065,6 +1099,8 @@ async fn main() -> Result<()> {
                 needs_redraw = true;
                 if state.palette.is_active {
                     state.term_scroll_y = state.term_scroll_y.saturating_add(3);
+                } else if state.show_ai_chat {
+                    state.ai_scroll_offset = state.ai_scroll_offset.saturating_add(3);
                 } else if state.show_lsp_pane {
                     state.lsp_scroll_offset = state.lsp_scroll_offset.saturating_sub(3);
                 } else {
@@ -1074,7 +1110,9 @@ async fn main() -> Result<()> {
             InputEvent::ScrollDown => {
                 needs_redraw = true;
                 if state.palette.is_active {
-                    state.term_scroll_y = state.term_scroll_y.saturating_add(3);
+                    state.term_scroll_y = state.term_scroll_y.saturating_sub(3);
+                } else if state.show_ai_chat {
+                    state.ai_scroll_offset = state.ai_scroll_offset.saturating_sub(3);
                 } else if state.show_lsp_pane {
                     state.lsp_scroll_offset = state.lsp_scroll_offset.saturating_add(3);
                 } else {
@@ -1087,6 +1125,5 @@ async fn main() -> Result<()> {
             InputEvent::Tick => {}
         }
     }
-
     Ok(())
 }

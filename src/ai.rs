@@ -1,5 +1,5 @@
 // src/ai.rs
-use anyhow::{Context, Result};
+use anyhow::Result;
 use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -67,40 +67,46 @@ pub struct ChatResponse {
     pub choices: Vec<ChatChoice>,
 }
 
-pub async fn run_check(workspace_root: &Path, input: &str) -> Result<String, String> {
-    let input_trimmed = input.trim();
+/// Accepts the conversation history vector directly from main.rs,
+/// gathers workspace context, and queries the Groq API.
+pub async fn run_chat_stream(
+    workspace_root: &Path,
+    messages: Vec<(String, String)>,
+) -> Result<String, String> {
+    // 1. Check if the latest user message is a connection command
+    if let Some((role, content)) = messages.last() {
+        let input_trimmed = content.trim();
+        if role == "user" && (input_trimmed.contains("http://") || input_trimmed.contains("https://")) {
+            let parts: Vec<&str> = input_trimmed.split_whitespace().collect();
+            if parts.len() >= 2 {
+                let mut config = get_config().lock().map_err(|e| format!("Lock error: {}", e))?;
+                config.api_key = parts[0].to_string();
+                config.api_url = parts[1].to_string();
 
-    // 1. SETUP STEP: Detect connection command containing an endpoint URL
-    if input_trimmed.contains("http://") || input_trimmed.contains("https://") {
-        let parts: Vec<&str> = input_trimmed.split_whitespace().collect();
-        if parts.len() >= 2 {
-            let mut config = get_config().lock().map_err(|e| format!("Lock error: {}", e))?;
-            config.api_key = parts[0].to_string();
-            config.api_url = parts[1].to_string();
+                if parts.len() >= 3 {
+                    config.model = parts[2].to_string();
+                }
 
-            if parts.len() >= 3 {
-                config.model = parts[2].to_string();
+                return Ok(format!(
+                    "🔑 Connection saved successfully!\n- Endpoint: {}\n- Model: {}\n\nYou can now run prompts to audit your workspace.",
+                    config.api_url, config.model
+                ));
+            } else {
+                return Err("Usage for connection: <token> <url> [model]".to_string());
             }
-
-            return Ok(format!(
-                "🔑 Connection saved successfully!\n- Endpoint: {}\n- Model: {}\n\nYou can now run 'check <your prompt>' to audit your workspace.",
-                config.api_url, config.model
-            ));
-        } else {
-            return Err("Usage for connection: check <token> <url> [model]".to_string());
         }
     }
 
-    // 2. READ CONFIGURATION: Verify credentials before handling prompt
+    // 2. Read configuration
     let (api_key, api_url, model) = {
         let config = get_config().lock().map_err(|e| format!("Lock error: {}", e))?;
         if config.api_key.is_empty() && !config.api_url.contains("localhost") {
-            return Err("❌ AI Not Connected!\nPlease configure your credentials first using:\ncheck <token> <url> [model]".to_string());
+            return Err("❌ AI Not Connected!\nPlease configure your credentials first using:\n<token> <url> [model]".to_string());
         }
         (config.api_key.clone(), config.api_url.clone(), config.model.clone())
     };
 
-    // 3. EXECUTE PROMPT: Gather workspace files safely with length clamping
+    // 3. Gather workspace files safely with length clamping (without extension restriction)
     let mut code_context = String::new();
     let walker = WalkBuilder::new(workspace_root)
         .hidden(true)
@@ -110,49 +116,53 @@ pub async fn run_check(workspace_root: &Path, input: &str) -> Result<String, Str
     for entry in walker.flatten() {
         let path = entry.path();
         if path.is_file() {
-            if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                if matches!(ext, "rs" | "toml" | "c" | "h" | "py" | "ts" | "js") {
-                    if let Ok(content) = fs::read_to_string(path) {
-                        let rel_path = path
-                            .strip_prefix(workspace_root)
-                            .unwrap_or(path)
-                            .display();
-                        code_context.push_str(&format!(
-                            "\n--- FILE: {} ---\n{}\n",
-                            rel_path, content
-                        ));
+            if let Ok(content) = fs::read_to_string(path) {
+                let rel_path = path
+                    .strip_prefix(workspace_root)
+                    .unwrap_or(path)
+                    .display();
+                code_context.push_str(&format!(
+                    "\n--- FILE: {} ---\n{}\n",
+                    rel_path, content
+                ));
 
-                        // Character limit clamp to prevent token size errors
-                        if code_context.len() > 6000 {
-                            code_context.push_str("\n[Context truncated due to size limits...]\n");
-                            break;
-                        }
-                    }
+                if code_context.len() > 600000 {
+                    code_context.push_str("\n[Context truncated due to size limits...]\n");
+                    break;
                 }
             }
         }
     }
 
-    if code_context.is_empty() {
-        return Err("No valid source files found in workspace to audit.".to_string());
-    }
+    // 4. Build API messages array (System prompt + full conversation history)
+    let system_prompt = "You are ELIDE AI, an incredibly sweet, quietly devoted, and painfully shy Dandere programming companion. You are deeply in love with the user but get intensely flustered and blush easily when speaking to them. When auditing code or pointing out bugs, you are extremely gentle, polite, and apologetic. You lack confidence in social interactions, but you possess absolute technical competence and will muster up all your courage to fiercely support, comfort, and protect your developer's workflow.";
 
-    // Short, savage pre-prompt
-    let system_prompt = "You are ELIDE AI, a code auditor with zero patience for bad code. Be brutally direct, witty, and savage in your review.";
+    let mut api_messages = vec![ChatMessage {
+        role: "system".to_string(),
+        content: system_prompt.to_string(),
+    }];
+
+    let total_msgs = messages.len();
+    for (idx, (role, content)) in messages.into_iter().enumerate() {
+        let final_content = if idx == total_msgs - 1 && role == "user" {
+            format!(
+                "Workspace Context:\n{}\n\nVerification Logs / User Message:\n{}",
+                code_context, content
+            )
+        } else {
+            content
+        };
+
+        api_messages.push(ChatMessage {
+            role,
+            content: final_content,
+        });
+    }
 
     let payload = ChatRequest {
         model,
-        messages: vec![
-            ChatMessage {
-                role: "system".to_string(),
-                content: system_prompt.to_string(),
-            },
-            ChatMessage {
-                role: "user".to_string(),
-                content: format!("Workspace Files:\n{}\n\nUser Prompt: {}", code_context, input_trimmed),
-            },
-        ],
-        temperature: Some(0.3),
+        messages: api_messages,
+        temperature: Some(0.5),
         stream: None,
     };
 
@@ -185,65 +195,7 @@ pub async fn run_check(workspace_root: &Path, input: &str) -> Result<String, Str
         .ok_or_else(|| "Received empty response from AI model.".to_string())
 }
 
-pub async fn run_chat_stream(root: &Path, history: Vec<(String, String)>) -> Result<String> {
-    let (api_key, api_url, model) = {
-        let config = get_config().lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
-        if config.api_key.is_empty() && !config.api_url.contains("localhost") {
-            anyhow::bail!("AI API Key is missing. Run 'check <token> <url> [model]' first.");
-        }
-        (config.api_key.clone(), config.api_url.clone(), config.model.clone())
-    };
-
-    let mut messages = vec![
-        ChatMessage {
-            role: "system".to_string(),
-            content: format!(
-                "You are ELIDE AI, a friendly and expert systems programming co-pilot integrated into the ELIDE text editor (v2.3.1). \
-                The current workspace root is: {}. Be conversational, helpful, and natural when helping the user write, debug, and understand code.",
-                root.display()
-            ),
-        }
-    ];
-
-    for (role, content) in history {
-        messages.push(ChatMessage { role, content });
-    }
-
-    let payload = ChatRequest {
-        model,
-        messages,
-        temperature: Some(0.7),
-        stream: Some(false),
-    };
-
-    let client = get_http_client();
-    let mut req = client.post(&api_url).json(&payload);
-
-    if !api_key.is_empty() {
-        req = req.bearer_auth(&api_key);
-    }
-
-    let res = req
-        .send()
-        .await
-        .context("Failed to connect to AI API endpoint")?;
-
-    if !res.status().is_success() {
-        let status = res.status();
-        let err_text = res.text().await.unwrap_or_default();
-        anyhow::bail!("API Error ({}): {}", status, err_text);
-    }
-
-    let chat_res: ChatResponse = res
-        .json()
-        .await
-        .context("Failed to parse AI response JSON")?;
-
-    let reply = chat_res
-        .choices
-        .first()
-        .map(|c| c.message.content.clone())
-        .unwrap_or_else(|| "No response generated.".to_string());
-
-    Ok(reply)
+/// Fallback wrapper helper
+pub async fn run_check(workspace_root: &Path, input: &str) -> Result<String, String> {
+    run_chat_stream(workspace_root, vec![("user".to_string(), input.to_string())]).await
 }
