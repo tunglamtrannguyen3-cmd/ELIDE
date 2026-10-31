@@ -106,7 +106,7 @@ Open the command palette using `Alt+T`.
 
 **Keyboard shortcuts**
 
-- `Alt+A` — AI chat
+- `Ctrl+A` — AI chat
 - `Alt+L` — LSP diagnostics
 - `Esc` — Close active pane
 
