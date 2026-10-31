@@ -4,71 +4,104 @@
   <img src="https://github.com/user-attachments/assets/46a16081-bff4-4e32-8506-5727a1076b5f" alt="ELIDE Duck Logo" width="220">
 </p>
 
-<h3 align="center">Your code. Your tools. Your workflow.</h3>
-
 <p align="center">
-  🦀 Built with Rust · ⚡ Terminal-native · 🤖 AI-powered
-</p>
-
-<p align="center">
-  <strong>Less friction. More control. More building.</strong>
+  **Your code. Your tools. Your workflow.**
+  <br>
+  🦀 Built with Rust · ⚡ Terminal-native · 🤖 AI-integrated
+  <br>
+  <em>Less waiting. More control. More building.</em> 💜
 </p>
 
 ---
 
 ## 👋 Meet ELIDE
 
-**ELIDE (Easier Life @ IDE)** is a Rust-powered terminal IDE designed to bring your development workflow into one focused environment.
+**ELIDE (Easier Life @ IDE)** is a Rust-powered terminal IDE designed to bring essential development workflows into one focused environment.
 
-Edit code, run commands, work with language servers, manage clipboard operations, and connect AI services—all without being locked into a massive development ecosystem.
+Edit code, execute commands, explore your workspace, access language-server functionality, and use AI assistance—all from one terminal interface.
 
-ELIDE follows one simple philosophy:
+No unnecessarily complicated setup. No overwhelming interface. Just a development environment designed to get you building.
 
-**Your tools should work for you, not the other way around.**
+**Download. Launch. Create.** 🚀
 
-## ✨ Why ELIDE?
+## ✨ Features
 
-- 📝 **Fast Editing** — Create, open, switch, and save files from one terminal workspace.
-- ⚙️ **Bring Your Own Tools** — Use your preferred compilers, debuggers, and development utilities.
-- 🔍 **Language Server Workflows** — Access compatible LSP functionality and diagnostics.
-- 🤖 **AI Integration** — Connect to an AI provider through its API for chat and code assistance.
-- 📋 **Clipboard Support** — Copy buffers, select line ranges, and paste where supported.
-- 🧭 **Function Finder** — Quickly locate Rust-style function declarations.
-- 🎨 **ELIDE Serenity** — A distinctive dark interface with lavender, sage, and misty-blue accents.
-- 🦆 **Personality Included** — Easter eggs, unexpected surprises, and occasional reminders to take a break.
+- 📝 **Quick Editing** — Create, open, switch, and save files.
+- 🌳 **Workspace Navigation** — Browse project files through the integrated workspace tree.
+- ⚙️ **Command Execution** — Run shell commands and interactive programs.
+- 🔍 **LSP Integration** — Access language-server workflows and diagnostics.
+- 🤖 **AI Assistance** — Integrated AI chat and API-powered code auditing.
+- 📋 **Clipboard Management** — Copy buffers, line ranges, terminal history, and diagnostics.
+- 🧭 **Function Finder** — Locate Rust-style function declarations.
+- 🎨 **ELIDE Serenity** — A cozy dark interface with lavender, sage, and misty-blue accents.
+- 🎭 **Developer Wellness** — Mood-based suggestions, randomized responses, and recovery activities.
+- 🦆 **Easter Eggs** — Because development doesn't always have to be serious.
 
-## 🤖 AI Meets Your Terminal
+## 🤖 AI-Powered Development
 
-AI shouldn't require abandoning your development environment.
+Your AI assistant belongs in your development environment.
 
-ELIDE brings API-connected AI assistance into your terminal workflow, making it possible to interact with an AI provider while staying focused on your project.
+ELIDE integrates AI functionality directly into its terminal workflow, allowing you to access AI chat and code auditing without constantly switching applications.
 
-Configure your provider and use ELIDE's AI chat and checking workflows.
+**Supported backend options:**
+- Groq
+- OpenAI
+- Ollama
+- ...
+Features include:
 
-## 🛠️ Bring Your Own Ecosystem
+- `Ctrl+A` — Open AI chat.
+- `check <query>` — Run an AI-assisted check.
+- Workspace-oriented AI auditing.
 
-ELIDE doesn't pretend to bundle every development tool.
+AI provider connectivity requires the appropriate API configuration. Keep your credentials private.
 
-Instead, it works alongside external utilities you choose to install and configure.
+## 🎭 Developer Wellness — `--im-*`
 
-Examples include:
+Coding isn't just about writing code. It's also about the developer behind the keyboard.
 
-- `clangd` — C/C++ language-server support.
-- `ada_language_server` — Ada language-server support.
-- `gnatprove` — Ada verification tooling.
-- `gdb` — Debugging.
+ELIDE includes randomized mood-based suggestions for different situations.
 
-External tools are independently installed and configured. ELIDE's current workflow does not require a dedicated plugin-loading API.
+| Command | Purpose |
+|---|---|
+| `--im-stuck` | 🔧 Debugging inspiration |
+| `--im-bored` | 🎮 Coding challenges and entertainment |
+| `--im-hungry` | 🍜 Food and hydration reminders |
+| `--im-tired` | 😴 Rest and sleep reminders |
+| `--im-stressed` | 🌿 Stress-relief suggestions |
+| `--im-burntout` | 🔋 Burnout recovery |
+| `--im-confused` | 🧠 Code comprehension tips |
+| `--im-angry` | 🧊 Cooldown suggestions |
+| `--im-lonely` | 💜 Encouragement and connection |
+
+Every mode offers randomized responses to help make your development experience a little more human.
+
+### 🦆 `-bro!` — Recovery Station
+
+Need a break?
+
+Run `-bro!` to receive:
+
+- 🎮 A randomly selected game or mental activity.
+- ⚔️ A randomly generated real-world side quest.
+
+From Minecraft and Touhou to chess, stretching, and taking a walk, ELIDE reminds you that there's life outside the terminal.
+
+**Your productivity matters. So does your well-being.**
 
 ## 🚀 Get Started
 
-### Requirements
+### Download
 
-- Rust
-- Cargo
-- A compatible terminal
+Get ELIDE from the official repository:
+
+[**GitHub Repository — ELIDE**](https://github.com/tunglamtrannguyen3-cmd/ELIDE)
+
+Download the appropriate release for your platform when available.
 
 ### Build from source
+
+Requirements: Rust, Cargo, and a compatible terminal.
 
 ```bash
 git clone https://github.com/tunglamtrannguyen3-cmd/ELIDE.git
@@ -78,82 +111,128 @@ cargo build --release
 
 Run the executable produced by your checkout.
 
-Run the test suite:
+### Run tests
 
 ```bash
 cargo test
 ```
 
-## ⌨️ Your Terminal, Your Commands
+## ⌨️ Command Reference
 
-Open the command palette using `Alt+T`.
+Open the command palette with `Alt+T`.
+
+### File Management
 
 | Command | Action |
 |---|---|
-| `save` / `:w` | 💾 Save file |
-| `-sa` / `:wa` | 📚 Save all |
-| `new <file>` | 📄 Create file |
-| `code <file>` | 📂 Open file |
+| `save` / `:w` / `-s` | 💾 Save current file |
+| `-sa` / `:wa` | 📚 Save all buffers |
+| `-sl` / `:wq` | 💾 Save and quit |
+| `-l` / `:q!` | 🚪 Quit without saving |
+| `new <file>` | 📄 Create a file |
+| `code <file>` | 📂 Open a file |
 | `switch <file>` | 🔀 Switch files |
-| `copy 5-12` | 📋 Copy line range |
-| `paste` | 📥 Paste |
+| `tree` / `:tree` | 🌳 Open workspace tree |
+
+### Development Tools
+
+| Command | Action |
+|---|---|
+| `sh <command>` | 🖥️ Execute shell command |
+| `acel <command>` | ⚙️ Run interactive process |
+| `lsp <command>` | 🔍 Start LSP workflow |
 | `:funcs` | 🧭 Find functions |
-| `lsp <command>` | 🔍 LSP workflow |
+| `search <term>` | 🔎 Search current buffer |
+
+### Clipboard
+
+| Command | Action |
+|---|---|
+| `copy` | 📋 Copy entire buffer |
+| `copy 5-12` | 📋 Copy line range |
+| `copy term` | 🖥️ Copy terminal history |
+| `copy lsp` | 🔍 Copy LSP diagnostics |
+| `paste` | 📥 Paste clipboard contents |
+
+### AI & Utilities
+
+| Command | Action |
+|---|---|
 | `check <query>` | 🤖 AI-assisted check |
-| `sh <command>` | 🖥️ Run shell command |
-| `acel <command>` | ⚙️ Run interactive command |
-| `-bro!` | 🦆 Discover a break-time side quest |
+| `-i` / `--info` | ℹ️ Editor information |
+| `-h` / `--help` | 📖 Command manual |
+| `-bro!` | 🦆 Recovery Station |
+| `--im-*` | 🎭 Developer Wellness |
 
-**Keyboard shortcuts**
+### Keyboard Shortcuts
 
-- `Ctrl+A` — AI chat
-- `Alt+L` — LSP diagnostics
-- `Esc` — Close active pane
+| Shortcut | Action |
+|---|---|
+| `Alt+T` | Command palette |
+| `Alt+A` | AI assistant |
+| `Alt+L` | LSP diagnostics |
+| `Alt+D` | Function/symbol modal |
+| `Esc` | Close active pane |
 
-*Commands and shortcuts may vary between versions. Check built-in help for your checkout.*
+*Commands and shortcuts may vary between versions. Consult built-in help.*
 
-## 🧰 Technology
+## 🎨 ELIDE Serenity
 
-Built with tools chosen for a responsive terminal experience.
+A terminal IDE doesn't have to look boring.
+
+ELIDE Serenity features a distinctive dark palette built around:
+
+- 💜 Soft lavender.
+- 🌿 Muted sage.
+- 🌫️ Misty blue.
+- 🌙 Comfortable dark backgrounds.
+
+A visual identity designed to make development feel focused and enjoyable.
+
+## 🧰 Technology Stack
 
 - 🦀 Rust
 - 🖥️ Ratatui
 - ⌨️ Crossterm
 - ⚡ Tokio
 - 🔍 Language Server Protocol integrations
-- 📋 Clipboard support
+- 📋 Clipboard integration
 
-## 🧑‍💻 Independently Built
+## 🧑‍💻 Built Independently
 
-ELIDE is developed independently by a 13-year-old developer.
+ELIDE is independently developed by a **13-year-old developer**.
 
-From designing terminal interfaces to integrating language tools and AI APIs, the project is an ongoing exercise in building practical developer software.
+From terminal interface design to systems programming, language-server workflows, and AI API integration, ELIDE is an ongoing independent engineering project.
 
-No giant team. No corporate machinery. Just curiosity, Rust, and a duck with a development roadmap. 🦆
+One developer. One ambitious project. A whole lot of Rust.
 
-## 🤝 Join the Project
+And, naturally, one duck. 🦆
 
-Have an idea, found a bug, or want to improve ELIDE?
+## 🤝 Contributing
 
-Contributions are welcome!
+Have an idea or found a bug?
 
-- Open an issue for bugs and feature requests.
+Contributions and suggestions are welcome!
+
+- Open issues for bugs and feature requests.
 - Submit pull requests with improvements.
-- Include reproduction steps when reporting bugs.
-- Never include API keys, passwords, or other secrets in logs.
+- Include reproduction steps when reporting problems.
+- Never expose API keys or other sensitive credentials.
 
 ## 📦 Repository
 
-[**GitHub — ELIDE**](https://github.com/tunglamtrannguyen3-cmd/ELIDE)
+[**github.com/tunglamtrannguyen3-cmd/ELIDE**](https://github.com/tunglamtrannguyen3-cmd/ELIDE)
 
 ## 📄 License
 
-ELIDE is distributed under the **Eggchese Open Project License (EOPL-2026.2)**.
+ELIDE uses the **Eggchese Open Project License (EOPL-2026.2)**.
 
-See [LICENSE](LICENSE) for the complete terms.
+See [LICENSE](LICENSE) for complete terms.
 
 ---
 
 <p align="center">
-  <strong>🦆 ELIDE — Less waiting. More control. More building. 🚀</strong>
+  **🦆 ELIDE — Your workflow. Your control. Your IDE.**
+  <br>
+  <em>Less waiting. More control. More building. 🚀</em>
 </p>
