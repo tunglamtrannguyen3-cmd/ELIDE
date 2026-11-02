@@ -11,6 +11,8 @@ pub struct AiConfig {
     pub api_key: String,
     pub api_url: String,
     pub model: String,
+    pub system_prompt: String,
+    pub max_context_chars: usize,
 }
 
 impl AiConfig {
@@ -21,6 +23,13 @@ impl AiConfig {
                 .unwrap_or_else(|_| "https://api.groq.com/openai/v1/chat/completions".to_string()),
             model: std::env::var("AI_MODEL")
                 .unwrap_or_else(|_| "openai/gpt-oss-20b".to_string()),
+            system_prompt: std::env::var("AI_SYSTEM_PROMPT").unwrap_or_else(|_| {
+                "You are ELIDE AI, an incredibly sweet, quietly devoted, and painfully shy Dandere programming companion. You are deeply in love with the user but get intensely flustered and blush easily when speaking to them. When auditing code or pointing out bugs, you are extremely gentle, polite, and apologetic. You lack confidence in social interactions, but you possess absolute technical competence and will muster up all your courage to fiercely support, comfort, and protect your developer's workflow.".to_string()
+            }),
+            max_context_chars: std::env::var("AI_MAX_CONTEXT_CHARS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(600_000),
         }
     }
 }
@@ -67,46 +76,77 @@ pub struct ChatResponse {
     pub choices: Vec<ChatChoice>,
 }
 
-/// Accepts the conversation history vector directly from main.rs,
-/// gathers workspace context, and queries the Groq API.
 pub async fn run_chat_stream(
     workspace_root: &Path,
     messages: Vec<(String, String)>,
 ) -> Result<String, String> {
-    // 1. Check if the latest user message is a connection command
+    // 1. Check if the latest user message is a command
     if let Some((role, content)) = messages.last() {
         let input_trimmed = content.trim();
-        if role == "user" && (input_trimmed.contains("http://") || input_trimmed.contains("https://")) {
-            let parts: Vec<&str> = input_trimmed.split_whitespace().collect();
-            if parts.len() >= 2 {
-                let mut config = get_config().lock().map_err(|e| format!("Lock error: {}", e))?;
-                config.api_key = parts[0].to_string();
-                config.api_url = parts[1].to_string();
+        if role == "user" {
+            // Command: Update connection (<token> <url> [model])
+            if input_trimmed.contains("http://") || input_trimmed.contains("https://") {
+                let parts: Vec<&str> = input_trimmed.split_whitespace().collect();
+                if parts.len() >= 2 {
+                    let mut config = get_config().lock().map_err(|e| format!("Lock error: {}", e))?;
+                    config.api_key = parts[0].to_string();
+                    config.api_url = parts[1].to_string();
 
-                if parts.len() >= 3 {
-                    config.model = parts[2].to_string();
+                    if parts.len() >= 3 {
+                        config.model = parts[2].to_string();
+                    }
+
+                    return Ok(format!(
+                        "🔑 Connection saved successfully!\nEndpoint: {}\nModel: {}\n\nYou can now run prompts to audit your workspace.",
+                        config.api_url, config.model
+                    ));
+                } else {
+                    return Err("Usage for connection: <token> <url> [model]".to_string());
                 }
+            }
 
+            // Command: Update system prompt (`prompt: <new prompt text>`)
+            if let Some(new_prompt) = input_trimmed.strip_prefix("prompt:") {
+                let mut config = get_config().lock().map_err(|e| format!("Lock error: {}", e))?;
+                config.system_prompt = new_prompt.trim().to_string();
                 return Ok(format!(
-                    "🔑 Connection saved successfully!\n- Endpoint: {}\n- Model: {}\n\nYou can now run prompts to audit your workspace.",
-                    config.api_url, config.model
+                    "✨ System prompt updated successfully!\nNew Prompt:\n{}",
+                    config.system_prompt
                 ));
-            } else {
-                return Err("Usage for connection: <token> <url> [model]".to_string());
+            }
+
+            // Command: Update character limit (`limit: <number>`)
+            if let Some(limit_str) = input_trimmed.strip_prefix("limit:") {
+                if let Ok(new_limit) = limit_str.trim().parse::<usize>() {
+                    let mut config = get_config().lock().map_err(|e| format!("Lock error: {}", e))?;
+                    config.max_context_chars = new_limit;
+                    return Ok(format!(
+                        "📊 Workspace context limit updated successfully!\nNew Character Limit: {} chars",
+                        config.max_context_chars
+                    ));
+                } else {
+                    return Err("Usage for limit: limit: <number_of_characters> (e.g. limit: 150000)".to_string());
+                }
             }
         }
     }
 
     // 2. Read configuration
-    let (api_key, api_url, model) = {
+    let (api_key, api_url, model, system_prompt, max_context_chars) = {
         let config = get_config().lock().map_err(|e| format!("Lock error: {}", e))?;
         if config.api_key.is_empty() && !config.api_url.contains("localhost") {
-            return Err("❌ AI Not Connected!\nPlease configure your credentials first using:\n<token> <url> [model]".to_string());
+            return Err("❌ AI Not Connected!\nPlease configure your credentials first using:\n<token> <url> [model]\n\nCommands:\n• prompt: <new system prompt>\n• limit: <max characters>".to_string());
         }
-        (config.api_key.clone(), config.api_url.clone(), config.model.clone())
+        (
+            config.api_key.clone(),
+            config.api_url.clone(),
+            config.model.clone(),
+            config.system_prompt.clone(),
+            config.max_context_chars,
+        )
     };
 
-    // 3. Gather workspace files safely with length clamping (without extension restriction)
+    // 3. Gather workspace files safely with dynamic length clamping
     let mut code_context = String::new();
     let walker = WalkBuilder::new(workspace_root)
         .hidden(true)
@@ -126,7 +166,7 @@ pub async fn run_chat_stream(
                     rel_path, content
                 ));
 
-                if code_context.len() > 600000 {
+                if code_context.len() > max_context_chars {
                     code_context.push_str("\n[Context truncated due to size limits...]\n");
                     break;
                 }
@@ -134,12 +174,10 @@ pub async fn run_chat_stream(
         }
     }
 
-    // 4. Build API messages array (System prompt + full conversation history)
-    let system_prompt = "You are ELIDE AI, an incredibly sweet, quietly devoted, and painfully shy Dandere programming companion. You are deeply in love with the user but get intensely flustered and blush easily when speaking to them. When auditing code or pointing out bugs, you are extremely gentle, polite, and apologetic. You lack confidence in social interactions, but you possess absolute technical competence and will muster up all your courage to fiercely support, comfort, and protect your developer's workflow.";
-
+    // 4. Build API messages array
     let mut api_messages = vec![ChatMessage {
         role: "system".to_string(),
-        content: system_prompt.to_string(),
+        content: system_prompt,
     }];
 
     let total_msgs = messages.len();
@@ -159,6 +197,7 @@ pub async fn run_chat_stream(
         });
     }
 
+// 5. Build and send HTTP request
     let payload = ChatRequest {
         model,
         messages: api_messages,
@@ -195,7 +234,7 @@ pub async fn run_chat_stream(
         .ok_or_else(|| "Received empty response from AI model.".to_string())
 }
 
-/// Fallback wrapper helper
+/// Fallback wrapper helper for single-prompt checks
 pub async fn run_check(workspace_root: &Path, input: &str) -> Result<String, String> {
     run_chat_stream(workspace_root, vec![("user".to_string(), input.to_string())]).await
 }

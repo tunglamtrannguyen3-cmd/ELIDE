@@ -1,6 +1,6 @@
 [package]
 name = "elide"
-version = "2.3.1"
+version = "2.4.0"
 edition = "2021"
 description = "Easier Life @ IDE: A high-performance, ultra-lightweight terminal development environment built in Rust. Designed to protect your RAM, minimize environmental footprint, and preserve developer mental health through built-in recovery stations."
 homepage = "https://github.com/tunglamtrannguyen3-cmd/ELIDE"
@@ -50,3 +50,4 @@ opt-level = 3
 lto = "fat"              # Full Link-Time Optimization
 panic = "abort"          # Eliminates unwinding landing pads
 codegen-units = 1
+strip = "symbols"

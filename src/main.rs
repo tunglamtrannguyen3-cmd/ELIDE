@@ -14,6 +14,7 @@ mod ai;
 mod clipboard;
 
 use anyhow::Result;
+use colors::{Theme, ThemePalette, palette_for};
 use crossterm::{
     cursor,
     event::KeyCode,
@@ -33,23 +34,23 @@ use std::{
 use tokio::sync::mpsc;
 use terminal::InputEvent;
 
-fn flush_token(stdout: &mut Stdout, word: &mut String, next_char: Option<char>) -> std::io::Result<()> {
+fn flush_token(stdout: &mut Stdout, word: &mut String, next_char: Option<char>, p: &ThemePalette) -> std::io::Result<()> {
     if word.is_empty() {
         return Ok(());
     }
     let color = match word.as_str() {
-        "fn" | "let" | "mut" | "return" | "if" | "else" | "match" | "struct" | "enum" | "pub" | "use" | "impl" | "for" | "while" | "loop" | "const" | "static" | "async" | "await" | "trait" | "type" | "as" | "ref" | "mod" | "where" | "dyn" | "move" | "unsafe" | "extern" | "break" | "continue" => colors::Palette::KEYWORD_MAUVE,
-        "String" | "usize" | "isize" | "i8" | "i16" | "i32" | "i64" | "i128" | "u8" | "u16" | "u32" | "u64" | "u128" | "f32" | "f64" | "bool" | "char" | "Vec" | "Option" | "Result" | "Self" | "Box" | "Rc" | "Arc" | "HashMap" | "BTreeMap" => colors::Palette::TYPE_YELLOW,
-        "true" | "false" | "Some" | "None" | "Ok" | "Err" => colors::Palette::NUMBER_PEACH,
+        "fn" | "let" | "mut" | "return" | "if" | "else" | "match" | "struct" | "enum" | "pub" | "use" | "impl" | "for" | "while" | "loop" | "const" | "static" | "async" | "await" | "trait" | "type" | "as" | "ref" | "mod" | "where" | "dyn" | "move" | "unsafe" | "extern" | "break" | "continue" => p.keyword,
+        "String" | "usize" | "isize" | "i8" | "i16" | "i32" | "i64" | "i128" | "u8" | "u16" | "u32" | "u64" | "u128" | "f32" | "f64" | "bool" | "char" | "Vec" | "Option" | "Result" | "Self" | "Box" | "Rc" | "Arc" | "HashMap" | "BTreeMap" => p.type_color,
+        "true" | "false" | "Some" | "None" | "Ok" | "Err" => p.number,
         _ => {
             if word.starts_with('\'') {
-                colors::Palette::STRING_GREEN
+                p.string
             } else if word.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '_') || word.starts_with("0x") {
-                colors::Palette::NUMBER_PEACH
+                p.number
             } else if next_char == Some('(') || next_char == Some('!') {
-                colors::Palette::FUNCTION_BLUE
+                p.function
             } else {
-                colors::Palette::TEXT_DEFAULT
+                p.text
             }
         }
     };
@@ -80,6 +81,7 @@ struct AppState {
     pub show_symbol_finder: bool,
     pub symbol_query: String,
     pub symbol_selected_idx: usize,
+    pub current_theme: Theme,
 }
 
 impl AppState {
@@ -105,6 +107,7 @@ impl AppState {
             show_symbol_finder: false,
             symbol_query: String::new(),
             symbol_selected_idx: 0,
+            current_theme: Theme::Serenity,
         }
     }
 
@@ -302,6 +305,31 @@ impl AppState {
             KeyCode::Enter => {
                 self.term_scroll_y = 0;
                 self.term_scroll_x = 0;
+                let raw_input = self.palette.input_buffer.trim().to_string();
+
+                // Intercept theme switching command
+                if let Some(theme_name) = raw_input.strip_prefix("theme:") {
+                    let new_theme = match theme_name.trim().to_lowercase().as_str() {
+                        "serenity" => Some(Theme::Serenity),
+                        "shrine" | "spring" => Some(Theme::SpringAtTheShrine),
+                        "tokyo" | "tokyonight" => Some(Theme::TokyoNight),
+                        "firefly" | "graveyard" => Some(Theme::GraveyardOfTheFirefly),
+                        "ocean" | "deep" => Some(Theme::DeepOcean),
+                        "forest" | "magic" => Some(Theme::MagicForest),
+                        "swamp" | "swampy" => Some(Theme::Swampy),
+                        "harvest" | "autumn" => Some(Theme::HarvestTime),
+                        _ => None,
+                    };
+
+                    if let Some(t) = new_theme {
+                        self.current_theme = t;
+                        let msg = format!("🎨 Theme switched successfully to {:?}!", self.current_theme);
+                        self.command_history.push((msg, true));
+                        self.palette.input_buffer.clear();
+                        return;
+                    }
+                }
+
                 let action = self.palette.parse_command(self.editor.filename.as_deref());
                 let lsp_start_cmd = match &action {
                     PaletteAction::SetLsp(cmd) if !cmd.is_empty() => Some(cmd.clone()),
@@ -597,13 +625,14 @@ impl Layout {
     }
 }
 
-fn set_border_color(stdout: &mut Stdout) -> Result<()> {
-    stdout.execute(SetForegroundColor(colors::Palette::UI_BORDER))?;
+fn set_border_color(stdout: &mut Stdout, p: &ThemePalette) -> Result<()> {
+    stdout.execute(SetForegroundColor(p.border))?;
     Ok(())
 }
 
 fn draw_frame(stdout: &mut Stdout, state: &AppState, layout: &Layout) -> Result<()> {
-    set_border_color(stdout)?;
+    let p = palette_for(state.current_theme);
+    set_border_color(stdout, p)?;
     stdout.execute(cursor::MoveTo(0, 0))?;
     write!(stdout, "╭{}╮", "─".repeat(layout.term_width.saturating_sub(2) as usize))?;
     let divider_x = layout.codespace_width.saturating_sub(1) as u16;
@@ -642,11 +671,12 @@ fn draw_frame(stdout: &mut Stdout, state: &AppState, layout: &Layout) -> Result<
 }
 
 fn render_ui(stdout: &mut Stdout, state: &mut AppState, layout: &Layout) -> Result<()> {
+    let p = palette_for(state.current_theme);
     stdout.execute(cursor::Hide)?;
-    stdout.execute(SetBackgroundColor(colors::Palette::BG_MAIN))?;
+    stdout.execute(SetBackgroundColor(p.bg_main))?;
     stdout.execute(Clear(ClearType::All))?;
     draw_frame(stdout, state, layout)?;
-    draw_banner(stdout, layout)?;
+    draw_banner(stdout, state, layout)?;
     draw_editor(stdout, state, layout)?;
     draw_lsp_pane(stdout, state, layout)?;
     draw_status_bar(stdout, state, layout)?;
@@ -663,15 +693,17 @@ fn render_ui(stdout: &mut Stdout, state: &mut AppState, layout: &Layout) -> Resu
     Ok(())
 }
 
-fn draw_banner(stdout: &mut Stdout, _layout: &Layout) -> Result<()> {
+fn draw_banner(stdout: &mut Stdout, state: &AppState, _layout: &Layout) -> Result<()> {
+    let p = palette_for(state.current_theme);
     stdout.execute(cursor::MoveTo(2, 0))?;
-    stdout.execute(SetForegroundColor(colors::Palette::FUNCTION_BLUE))?;
-    write!(stdout, " Your shortcut to an Easier Life")?;
+    stdout.execute(SetForegroundColor(p.function))?;
+    write!(stdout, " Your shortcut to an Easier Life (Theme: {:?})", state.current_theme)?;
     stdout.execute(ResetColor)?;
     Ok(())
 }
 
 fn draw_editor(stdout: &mut Stdout, state: &AppState, layout: &Layout) -> Result<()> {
+    let p = palette_for(state.current_theme);
     for i in 0..layout.editor_height {
         let row = state.editor.row_offset + i;
         let screen_y = (layout.banner_height + i) as u16;
@@ -679,14 +711,14 @@ fn draw_editor(stdout: &mut Stdout, state: &AppState, layout: &Layout) -> Result
         if row < state.editor.lines.len() {
             let line = &state.editor.lines[row];
             let display_line: String = line.chars().skip(state.editor.col_offset).take(layout.edit_pane_w).collect();
-            stdout.execute(SetForegroundColor(colors::Palette::COMMENT_GRAY))?;
+            stdout.execute(SetForegroundColor(p.comment))?;
             write!(stdout, "{:3}", row + 1)?;
-            set_border_color(stdout)?;
+            set_border_color(stdout, p)?;
             write!(stdout, "│ ")?;
             let trimmed = line.trim();
             let is_function_header = trimmed.starts_with("fn ") || trimmed.starts_with("pub fn ") || trimmed.starts_with("async fn ") || trimmed.starts_with("pub async fn ");
             if is_function_header {
-                stdout.execute(SetForegroundColor(colors::Palette::SOFT_NAVY))?;
+                stdout.execute(SetForegroundColor(p.accent))?;
                 write!(stdout, "{}", display_line)?;
                 stdout.execute(ResetColor)?;
             } else {
@@ -698,39 +730,39 @@ fn draw_editor(stdout: &mut Stdout, state: &AppState, layout: &Layout) -> Result
                     let c = chars[char_idx];
                     let next_c = chars.get(char_idx + 1).copied();
                     if in_comment {
-                        stdout.execute(SetForegroundColor(colors::Palette::COMMENT_GRAY))?;
+                        stdout.execute(SetForegroundColor(p.comment))?;
                         write!(stdout, "{}", c)?;
                     } else if in_string {
-                        stdout.execute(SetForegroundColor(colors::Palette::STRING_GREEN))?;
+                        stdout.execute(SetForegroundColor(p.string))?;
                         write!(stdout, "{}", c)?;
                         if c == '"' { in_string = false; }
                     } else if c == '/' && next_c == Some('/') {
-                        let _ = flush_token(stdout, &mut word, Some('/'));
+                        let _ = flush_token(stdout, &mut word, Some('/'), p);
                         in_comment = true;
-                        stdout.execute(SetForegroundColor(colors::Palette::COMMENT_GRAY))?;
+                        stdout.execute(SetForegroundColor(p.comment))?;
                         write!(stdout, "{}", c)?;
                     } else if c == '"' {
-                        let _ = flush_token(stdout, &mut word, Some('"'));
+                        let _ = flush_token(stdout, &mut word, Some('"'), p);
                         in_string = true;
-                        stdout.execute(SetForegroundColor(colors::Palette::STRING_GREEN))?;
+                        stdout.execute(SetForegroundColor(p.string))?;
                         write!(stdout, "{}", c)?;
                     } else if c.is_alphanumeric() || c == '_' {
                         word.push(c);
                     } else {
-                        let _ = flush_token(stdout, &mut word, Some(c));
-                        stdout.execute(SetForegroundColor(colors::Palette::TEXT_DEFAULT))?;
+                        let _ = flush_token(stdout, &mut word, Some(c), p);
+                        stdout.execute(SetForegroundColor(p.text))?;
                         write!(stdout, "{}", c)?;
                     }
                 }
-                let _ = flush_token(stdout, &mut word, None);
+                let _ = flush_token(stdout, &mut word, None, p);
                 stdout.execute(ResetColor)?;
             }
         } else {
-            stdout.execute(SetForegroundColor(colors::Palette::COMMENT_GRAY))?;
+            stdout.execute(SetForegroundColor(p.comment))?;
             write!(stdout, "")?;
-            set_border_color(stdout)?;
+            set_border_color(stdout, p)?;
             write!(stdout, "│ ")?;
-            stdout.execute(SetForegroundColor(colors::Palette::COMMENT_GRAY))?;
+            stdout.execute(SetForegroundColor(p.comment))?;
             write!(stdout, "~")?;
             stdout.execute(ResetColor)?;
         }
@@ -740,24 +772,25 @@ fn draw_editor(stdout: &mut Stdout, state: &AppState, layout: &Layout) -> Result
 
 fn draw_lsp_pane(stdout: &mut Stdout, state: &mut AppState, layout: &Layout) -> Result<()> {
     if !state.show_lsp_pane || layout.debug_width == 0 { return Ok(()); }
+    let p = palette_for(state.current_theme);
     let divider_x = layout.codespace_width.saturating_sub(1) as u16;
     let debug_x = divider_x + 1;
     for i in 0..layout.editor_height {
         let y = (layout.banner_height + i) as u16;
         stdout.execute(cursor::MoveTo(debug_x, y))?;
-        stdout.execute(SetBackgroundColor(colors::Palette::BG_PANEL))?;
-        write!(stdout, "{}", "".repeat(layout.debug_width - 1))?;
-        stdout.execute(SetBackgroundColor(colors::Palette::BG_MAIN))?;
+        stdout.execute(SetBackgroundColor(p.bg_panel))?;
+        write!(stdout, "{}", " ".repeat(layout.debug_width - 1))?;
+        stdout.execute(SetBackgroundColor(p.bg_main))?;
     }
     stdout.execute(cursor::MoveTo(debug_x + 1, 1))?;
-    stdout.execute(SetBackgroundColor(colors::Palette::BG_PANEL))?;
-    stdout.execute(SetForegroundColor(colors::Palette::HINT_TEAL))?;
+    stdout.execute(SetBackgroundColor(p.bg_panel))?;
+    stdout.execute(SetForegroundColor(p.hint))?;
     write!(stdout, "LSP Workspace")?;
     stdout.execute(ResetColor)?;
     if state.current_diagnostics.is_empty() {
         stdout.execute(cursor::MoveTo(debug_x + 1, 3))?;
-        stdout.execute(SetBackgroundColor(colors::Palette::BG_PANEL))?;
-        stdout.execute(SetForegroundColor(colors::Palette::SUCCESS_GREEN))?;
+        stdout.execute(SetBackgroundColor(p.bg_panel))?;
+        stdout.execute(SetForegroundColor(p.success))?;
         write!(stdout, "Nominal")?;
         stdout.execute(ResetColor)?;
     } else {
@@ -795,10 +828,10 @@ fn draw_lsp_pane(stdout: &mut Stdout, state: &mut AppState, layout: &Layout) -> 
         state.lsp_scroll_offset = state.lsp_scroll_offset.min(max_scroll);
         for (idx, (line, status)) in wrapped_lines.iter().skip(state.lsp_scroll_offset).take(max_display_lines).enumerate() {
             stdout.execute(cursor::MoveTo(debug_x + 1, 3 + idx as u16))?;
-            stdout.execute(SetBackgroundColor(colors::Palette::BG_PANEL))?;
+            stdout.execute(SetBackgroundColor(p.bg_panel))?;
             if !line.is_empty() {
-                stdout.execute(SetAttribute(colors::attribute_for_status(*status)))?;
-                stdout.execute(SetForegroundColor(colors::color_for_status(*status)))?;
+               stdout.execute(SetAttribute(colors::attribute_for_status(*status)))?;
+stdout.execute(SetForegroundColor(colors::color_for_status_in(state.current_theme, *status)))?;
                 write!(stdout, "{}", line)?;
                 stdout.execute(SetAttribute(Attribute::Reset))?;
                 stdout.execute(ResetColor)?;
@@ -809,6 +842,7 @@ fn draw_lsp_pane(stdout: &mut Stdout, state: &mut AppState, layout: &Layout) -> 
 }
 
 fn draw_status_bar(stdout: &mut Stdout, state: &AppState, layout: &Layout) -> Result<()> {
+    let p = palette_for(state.current_theme);
     let status_row = (layout.banner_height + layout.editor_height) as u16;
     stdout.execute(cursor::MoveTo(2, status_row))?;
     let dirty_flag = if state.editor.is_dirty { " [+] " } else { "" };
@@ -821,20 +855,21 @@ fn draw_status_bar(stdout: &mut Stdout, state: &AppState, layout: &Layout) -> Re
         state.lsp_client.server_name.as_str(),
         state.lsp_client.language_id.as_str(),
     );
-    stdout.execute(SetForegroundColor(colors::Palette::TEXT_DEFAULT))?;
+    stdout.execute(SetForegroundColor(p.text))?;
     write!(stdout, "{}", status)?;
     stdout.execute(ResetColor)?;
     Ok(())
 }
 
 fn draw_terminal_pane(stdout: &mut Stdout, state: &AppState, layout: &Layout) -> Result<()> {
+    let p = palette_for(state.current_theme);
     let status_row = (layout.banner_height + layout.editor_height) as u16;
     let term_start_row = status_row + 1;
     for i in 0..layout.term_pane_height {
         let y = term_start_row + i as u16;
         stdout.execute(cursor::MoveTo(1, y))?;
-        stdout.execute(SetBackgroundColor(colors::Palette::BG_PANEL))?;
-        write!(stdout, "{}", "".repeat(layout.term_width.saturating_sub(2) as usize))?;
+        stdout.execute(SetBackgroundColor(p.bg_panel))?;
+        write!(stdout, "{}", " ".repeat(layout.term_width.saturating_sub(2) as usize))?;
     }
     let mut display_history = Vec::new();
     for (msg, success) in &state.command_history {
@@ -868,9 +903,9 @@ fn draw_terminal_pane(stdout: &mut Stdout, state: &AppState, layout: &Layout) ->
         } else {
             String::new()
         };
-        stdout.execute(SetBackgroundColor(colors::Palette::BG_PANEL))?;
+        stdout.execute(SetBackgroundColor(p.bg_panel))?;
         stdout.execute(SetAttribute(colors::attribute_for_status(status_type)))?;
-        stdout.execute(SetForegroundColor(colors::color_for_status(status_type)))?;
+        stdout.execute(SetForegroundColor(colors::color_for_status_in(state.current_theme, status_type)))?;
         write!(stdout, "{}", display_str)?;
         stdout.execute(SetAttribute(Attribute::Reset))?;
         stdout.execute(ResetColor)?;
@@ -879,19 +914,20 @@ fn draw_terminal_pane(stdout: &mut Stdout, state: &AppState, layout: &Layout) ->
 }
 
 fn draw_ai_chat_pane(stdout: &mut Stdout, state: &AppState, layout: &Layout) -> Result<()> {
+    let p = palette_for(state.current_theme);
     let status_row = (layout.banner_height + layout.editor_height) as u16;
     let term_start_row = status_row + 1;
 
     for i in 0..layout.term_pane_height {
         let y = term_start_row + i as u16;
         stdout.execute(cursor::MoveTo(1, y))?;
-        stdout.execute(SetBackgroundColor(colors::Palette::BG_PANEL))?;
+        stdout.execute(SetBackgroundColor(p.bg_panel))?;
         write!(stdout, "{}", " ".repeat(layout.term_width.saturating_sub(2) as usize))?;
     }
 
     stdout.execute(cursor::MoveTo(2, term_start_row))?;
-    stdout.execute(SetBackgroundColor(colors::Palette::BG_PANEL))?;
-    stdout.execute(SetForegroundColor(colors::Palette::FUNCTION_BLUE))?;
+    stdout.execute(SetBackgroundColor(p.bg_panel))?;
+    stdout.execute(SetForegroundColor(p.function))?;
     write!(stdout, "💬 ELIDE AI Auditor Chat (Ctrl+A to close)")?;
     stdout.execute(ResetColor)?;
 
@@ -913,7 +949,7 @@ fn draw_ai_chat_pane(stdout: &mut Stdout, state: &AppState, layout: &Layout) -> 
 
     for (idx, line) in display_lines.iter().skip(scroll).take(max_display_lines).enumerate() {
         stdout.execute(cursor::MoveTo(2, term_start_row + 1 + idx as u16))?;
-        stdout.execute(SetBackgroundColor(colors::Palette::BG_PANEL))?;
+        stdout.execute(SetBackgroundColor(p.bg_panel))?;
         
         let chars: Vec<char> = line.chars().collect();
         let display_str: String = if chars.len() > max_width {
@@ -923,11 +959,11 @@ fn draw_ai_chat_pane(stdout: &mut Stdout, state: &AppState, layout: &Layout) -> 
         };
 
         if line.starts_with("ELIDE:") {
-            stdout.execute(SetForegroundColor(colors::Palette::STRING_GREEN))?;
+            stdout.execute(SetForegroundColor(p.string))?;
         } else if line.starts_with("You:") {
-            stdout.execute(SetForegroundColor(colors::Palette::TYPE_YELLOW))?;
+            stdout.execute(SetForegroundColor(p.type_color))?;
         } else {
-            stdout.execute(SetForegroundColor(colors::Palette::TEXT_DEFAULT))?;
+            stdout.execute(SetForegroundColor(p.text))?;
         }
 
         write!(stdout, "{}", display_str)?;
@@ -938,14 +974,15 @@ fn draw_ai_chat_pane(stdout: &mut Stdout, state: &AppState, layout: &Layout) -> 
 }
 
 fn draw_command_palette(stdout: &mut Stdout, state: &AppState, layout: &Layout) -> Result<()> {
+    let p = palette_for(state.current_theme);
     let bottom_y = layout.term_height.saturating_sub(1);
     stdout.execute(cursor::MoveTo(2, bottom_y))?;
     if state.palette.is_active {
-        stdout.execute(SetForegroundColor(colors::Palette::TYPE_YELLOW))?;
+        stdout.execute(SetForegroundColor(p.type_color))?;
         write!(stdout, " : {}", state.palette.input_buffer)?;
         stdout.execute(ResetColor)?;
     } else {
-        stdout.execute(SetForegroundColor(colors::Palette::COMMENT_GRAY))?;
+        stdout.execute(SetForegroundColor(p.comment))?;
         write!(stdout, " : (Ctrl+A AI chat, Alt+T term, Alt+D symbols, Esc close) ")?;
         stdout.execute(ResetColor)?;
     }
@@ -954,38 +991,39 @@ fn draw_command_palette(stdout: &mut Stdout, state: &AppState, layout: &Layout) 
 
 fn draw_symbol_finder_modal(stdout: &mut Stdout, state: &AppState, layout: &Layout) -> Result<()> {
     if !state.show_symbol_finder { return Ok(()); }
+    let p = palette_for(state.current_theme);
     let modal_w = (layout.term_width as usize * 60) / 100;
     let modal_h = 12;
     let start_x = (layout.term_width as usize).saturating_sub(modal_w) / 2;
     let start_y = (layout.term_height as usize).saturating_sub(modal_h) / 2;
-    set_border_color(stdout)?;
+    set_border_color(stdout, p)?;
     stdout.execute(cursor::MoveTo(start_x as u16, start_y as u16))?;
     write!(stdout, "╭{}╮", "─".repeat(modal_w.saturating_sub(2)))?;
     for i in 1..modal_h - 1 {
         stdout.execute(cursor::MoveTo(start_x as u16, (start_y + i) as u16))?;
-        stdout.execute(SetBackgroundColor(colors::Palette::BG_PANEL))?;
-        write!(stdout, "│{}│", "".repeat(modal_w.saturating_sub(2)))?;
+        stdout.execute(SetBackgroundColor(p.bg_panel))?;
+        write!(stdout, "│{}│", " ".repeat(modal_w.saturating_sub(2)))?;
     }
     stdout.execute(cursor::MoveTo(start_x as u16, (start_y + modal_h - 1) as u16))?;
-    stdout.execute(SetBackgroundColor(colors::Palette::BG_MAIN))?;
+    stdout.execute(SetBackgroundColor(p.bg_main))?;
     write!(stdout, "╰{}╯", "─".repeat(modal_w.saturating_sub(2)))?;
     stdout.execute(cursor::MoveTo((start_x + 2) as u16, (start_y + 1) as u16))?;
-    stdout.execute(SetBackgroundColor(colors::Palette::BG_PANEL))?;
-    stdout.execute(SetForegroundColor(colors::Palette::TYPE_YELLOW))?;
+    stdout.execute(SetBackgroundColor(p.bg_panel))?;
+    stdout.execute(SetForegroundColor(p.type_color))?;
     write!(stdout, "🔍 Function: {}", state.symbol_query)?;
     stdout.execute(cursor::MoveTo((start_x + 1) as u16, (start_y + 2) as u16))?;
-    set_border_color(stdout)?;
+    set_border_color(stdout, p)?;
     write!(stdout, "{}", "─".repeat(modal_w.saturating_sub(2)))?;
     let matches = state.get_filtered_symbols();
     let display_limit = modal_h.saturating_sub(4);
     for (idx, (_, label)) in matches.iter().take(display_limit).enumerate() {
         stdout.execute(cursor::MoveTo((start_x + 2) as u16, (start_y + 3 + idx) as u16))?;
-        stdout.execute(SetBackgroundColor(colors::Palette::BG_PANEL))?;
+        stdout.execute(SetBackgroundColor(p.bg_panel))?;
         if idx == state.symbol_selected_idx {
-            stdout.execute(SetForegroundColor(colors::Palette::FUNCTION_BLUE))?;
+            stdout.execute(SetForegroundColor(p.function))?;
             write!(stdout, "► {:<width$}", label, width = modal_w.saturating_sub(5))?;
         } else {
-            stdout.execute(SetForegroundColor(colors::Palette::TEXT_DEFAULT))?;
+            stdout.execute(SetForegroundColor(p.text))?;
             write!(stdout, "{:<width$}", label, width = modal_w.saturating_sub(5))?;
         }
     }
@@ -1012,7 +1050,7 @@ fn sync_cursor(stdout: &mut Stdout, state: &AppState, layout: &Layout) -> Result
 async fn main() -> Result<()> {
     let _guard = terminal::TerminalGuard::init()?;
     let tracer = tracer::KernelTracer::init();
-    tracer.log_event("ELIDE v2.3.0 Initialized!");
+    tracer.log_event("ELIDE v2.4.0 Initialized!");
 
     let mut stdout = stdout();
     let mut state = AppState::new();
