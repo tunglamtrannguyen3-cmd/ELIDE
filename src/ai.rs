@@ -166,7 +166,7 @@ pub async fn run_chat_stream(
                     rel_path, content
                 ));
 
-                if code_context.len() > max_context_chars {
+                if code_context.len() > 600000 {
                     code_context.push_str("\n[Context truncated due to size limits...]\n");
                     break;
                 }
