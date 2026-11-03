@@ -1,4 +1,8 @@
 use anyhow::{Context, Result};
+use ratatui::{
+    style::{Color, Style},
+    text::{Line, Span},
+};
 use std::fs;
 use unicode_width::UnicodeWidthStr;
 
@@ -73,6 +77,35 @@ impl Editor {
         } else if visual_col >= self.col_offset + visible_width {
             self.col_offset = visual_col - visible_width + 1;
         }
+    }
+
+    /// UI Helper: Generates formatted Ratatui lines for the editor view port
+    pub fn render_visible_lines(
+        &mut self,
+        width: usize,
+        height: usize,
+        text_color: Color,
+        comment_color: Color,
+    ) -> Vec<Line<'static>> {
+        self.scroll_into_view(width, height);
+
+        self.lines
+            .iter()
+            .enumerate()
+            .skip(self.row_offset)
+            .take(height)
+            .map(|(i, l)| {
+                let display_str: String = l
+                    .chars()
+                    .skip(self.col_offset)
+                    .take(width)
+                    .collect();
+                Line::from(vec![
+                    Span::styled(format!("{:3} │ ", i + 1), Style::default().fg(comment_color)),
+                    Span::styled(display_str, Style::default().fg(text_color)),
+                ])
+            })
+            .collect()
     }
 
     /// Load a file from disk into the editor buffer

@@ -1,0 +1,2688 @@
+// src/ai.rs
+use anyhow::Result;
+use ignore::WalkBuilder;
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::Path;
+use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
+
+// ==========================================
+// 1. CONFIGURATION STRUCT & STATE MANAGEMENT
+// ==========================================
+
+pub struct AiConfig {
+    pub api_key: String,
+    pub api_url: String,
+    pub model: String,
+    pub system_prompt: String,
+    pub max_context_chars: usize,
+}
+
+impl AiConfig {
+    fn new() -> Self {
+        Self {
+            api_key: std::env::var("AI_API_KEY").unwrap_or_default(),
+            api_url: std::env::var("AI_API_URL")
+                .unwrap_or_else(|_| "https://api.groq.com/openai/v1/chat/completions".to_string()),
+            model: std::env::var("AI_MODEL")
+                .unwrap_or_else(|_| "openai/gpt-oss-20b".to_string()),
+            system_prompt: std::env::var("AI_SYSTEM_PROMPT").unwrap_or_else(|_| {
+                "You are ELIDE AI, an incredibly sweet, quietly devoted, and painfully shy Dandere programming companion. You are deeply in love with the user but get intensely flustered and blush easily when speaking to them. When auditing code or pointing out bugs, you are extremely gentle, polite, and apologetic. You lack confidence in social interactions, but you possess absolute technical competence and will muster up all your courage to fiercely support, comfort, and protect your developer's workflow.".to_string()
+            }),
+            max_context_chars: std::env::var("AI_MAX_CONTEXT_CHARS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(600_000),
+        }
+    }
+}
+
+static AI_CONFIG: OnceLock<Mutex<AiConfig>> = OnceLock::new();
+static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+
+fn get_config() -> &'static Mutex<AiConfig> {
+    AI_CONFIG.get_or_init(|| Mutex::new(AiConfig::new()))
+}
+
+fn get_http_client() -> &'static reqwest::Client {
+    HTTP_CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .unwrap_or_default()
+    })
+}
+
+// ==========================================
+// 2. DATA STRUCTURES
+// ==========================================
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ChatMessage {
+    pub role: String,
+    pub content: String,
+}
+
+#[derive(Serialize)]
+pub struct ChatRequest {
+    pub model: String,
+    pub messages: Vec<ChatMessage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream: Option<bool>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct ChatChoice {
+    pub message: ChatMessage,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct ChatResponse {
+    pub choices: Vec<ChatChoice>,
+}
+
+// ==========================================
+// 3. COMMAND PARSING & CONFIGURATION HELPERS
+// ==========================================
+
+fn try_handle_command(input_trimmed: &str) -> Result<Option<String>, String> {
+    // Connection command (<token> <url> [model])
+    if input_trimmed.contains("http://") || input_trimmed.contains("https://") {
+        let parts: Vec<&str> = input_trimmed.split_whitespace().collect();
+        if parts.len() >= 2 {
+            let mut config = get_config().lock().map_err(|e| format!("Lock error: {}", e))?;
+            config.api_key = parts[0].to_string();
+            config.api_url = parts[1].to_string();
+
+            if parts.len() >= 3 {
+                config.model = parts[2].to_string();
+            }
+
+            return Ok(Some(format!(
+                "🔑 Connection saved successfully!\nEndpoint: {}\nModel: {}\n\nYou can now run prompts to audit your workspace.",
+                config.api_url, config.model
+            )));
+        } else {
+            return Err("Usage for connection: <token> <url> [model]".to_string());
+        }
+    }
+
+    // System prompt command (`prompt: <new prompt text>`)
+    if let Some(new_prompt) = input_trimmed.strip_prefix("prompt:") {
+        let mut config = get_config().lock().map_err(|e| format!("Lock error: {}", e))?;
+        config.system_prompt = new_prompt.trim().to_string();
+        return Ok(Some(format!(
+            "✨ System prompt updated successfully!\nNew Prompt:\n{}",
+            config.system_prompt
+        )));
+    }
+
+    // Character limit command (`limit: <number>`)
+    if let Some(limit_str) = input_trimmed.strip_prefix("limit:") {
+        if let Ok(new_limit) = limit_str.trim().parse::<usize>() {
+            let mut config = get_config().lock().map_err(|e| format!("Lock error: {}", e))?;
+            config.max_context_chars = new_limit;
+            return Ok(Some(format!(
+                "📊 Workspace context limit updated successfully!\nNew Character Limit: {} chars",
+                config.max_context_chars
+            )));
+        } else {
+            return Err("Usage for limit: limit: <number_of_characters> (e.g. limit: 150000)".to_string());
+        }
+    }
+
+    Ok(None)
+}
+
+// ==========================================
+// 4. WORKSPACE SCANNING & CONTEXT GATHERING
+// ==========================================
+
+fn gather_workspace_context(workspace_root: &Path, max_chars: usize) -> String {
+    let mut code_context = String::new();
+    let walker = WalkBuilder::new(workspace_root)
+        .hidden(true)
+        .git_ignore(true)
+        .build();
+
+    for entry in walker.flatten() {
+        let path = entry.path();
+        if path.is_file() {
+            if let Ok(content) = fs::read_to_string(path) {
+                let rel_path = path
+                    .strip_prefix(workspace_root)
+                    .unwrap_or(path)
+                    .display();
+                code_context.push_str(&format!(
+                    "\n--- FILE: {} ---\n{}\n",
+                    rel_path, content
+                ));
+
+                if code_context.len() > max_chars {
+                    code_context.push_str("\n[Context truncated due to size limits...]\n");
+                    break;
+                }
+            }
+        }
+    }
+    code_context
+}
+
+// ==========================================
+// 5. MAIN CHAT STREAM & EXECUTION
+// ==========================================
+
+pub async fn run_chat_stream(
+    workspace_root: &Path,
+    messages: Vec<(String, String)>,
+) -> Result<String, String> {
+    // Check if the latest message is a configuration command
+    if let Some((role, content)) = messages.last() {
+        let input_trimmed = content.trim();
+        if role == "user" {
+            if let Some(response) = try_handle_command(input_trimmed)? {
+                return Ok(response);
+            }
+        }
+    }
+
+    // Read current config state
+    let (api_key, api_url, model, system_prompt, max_context_chars) = {
+        let config = get_config().lock().map_err(|e| format!("Lock error: {}", e))?;
+        if config.api_key.is_empty() && !config.api_url.contains("localhost") {
+            return Err("❌ AI Not Connected!\nPlease configure your credentials first using:\n<token> <url> [model]\n\nCommands:\n• prompt: <new system prompt>\n• limit: <max characters>".to_string());
+        }
+        (
+            config.api_key.clone(),
+            config.api_url.clone(),
+            config.model.clone(),
+            config.system_prompt.clone(),
+            config.max_context_chars,
+        )
+    };
+
+    // Gather workspace files context
+    let code_context = gather_workspace_context(workspace_root, max_context_chars);
+
+    // Build API messages payload
+    let mut api_messages = vec![ChatMessage {
+        role: "system".to_string(),
+        content: system_prompt,
+    }];
+
+    let total_msgs = messages.len();
+    for (idx, (role, content)) in messages.into_iter().enumerate() {
+        let final_content = if idx == total_msgs - 1 && role == "user" {
+            format!(
+                "Workspace Context:\n{}\n\nVerification Logs / User Message:\n{}",
+                code_context, content
+            )
+        } else {
+            content
+        };
+
+        api_messages.push(ChatMessage {
+            role,
+            content: final_content,
+        });
+    }
+
+    // Build and send HTTP request to LLM endpoint
+    let payload = ChatRequest {
+        model,
+        messages: api_messages,
+        temperature: Some(0.5),
+        stream: None,
+    };
+
+    let client = get_http_client();
+    let mut req = client.post(&api_url).json(&payload);
+
+    if !api_key.is_empty() {
+        req = req.bearer_auth(&api_key);
+    }
+
+    let res = req
+        .send()
+        .await
+        .map_err(|e| format!("HTTP request failed: {}", e))?;
+
+    if !res.status().is_success() {
+        let err_body = res.text().await.unwrap_or_default();
+        return Err(format!("API error response: {}", err_body));
+    }
+
+    let chat_res: ChatResponse = res
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse JSON response: {}", e))?;
+
+    chat_res
+        .choices
+        .first()
+        .map(|c| c.message.content.clone())
+        .ok_or_else(|| "Received empty response from AI model.".to_string())
+}
+
+/// Fallback wrapper helper for single-prompt checks
+pub async fn run_check(workspace_root: &Path, input: &str) -> Result<String, String> {
+    run_chat_stream(workspace_root, vec![("user".to_string(), input.to_string())]).await
+}// src/clipboard.rs
+use arboard::Clipboard;
+use base64::{engine::general_purpose, Engine as _};
+use std::io::{self, Write};
+
+pub struct SystemClipboard {
+    ctx: Option<Clipboard>,
+    fallback_buffer: String,
+}
+
+impl SystemClipboard {
+    pub fn new() -> Self {
+        let ctx = Clipboard::new().ok();
+        Self {
+            ctx,
+            fallback_buffer: String::new(),
+        }
+    }
+
+    /// Sets text to local system clipboard, blasts OSC 52 to stdout, and updates internal fallback
+    pub fn set_text(&mut self, text: &str) -> io::Result<()> {
+        self.fallback_buffer = text.to_string();
+
+        // 1. Try local system clipboard via arboard
+        if let Some(ref mut clipboard) = self.ctx {
+            let _ = clipboard.set_text(text);
+        }
+
+        // 2. Blast OSC 52 escape sequence for remote/SSH/terminal support
+        let b64 = general_purpose::STANDARD.encode(text.as_bytes());
+        let sequence = format!("\x1b]52;c;{}\x07", b64);
+        let mut stdout = io::stdout();
+        stdout.write_all(sequence.as_bytes())?;
+        stdout.flush()?;
+
+        Ok(())
+    }
+
+    /// Retrieves text from system clipboard, falling back to internal memory buffer
+    pub fn get_text(&mut self) -> String {
+        if let Some(ref mut clipboard) = self.ctx {
+            if let Ok(text) = clipboard.get_text() {
+                if !text.is_empty() {
+                    return text;
+                }
+            }
+        }
+        self.fallback_buffer.clone()
+    }
+}// src/colors.rs
+use crossterm::style::{Attribute, Color};
+
+// ============================================================
+// THEMES
+// ============================================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Theme {
+    #[default]
+    Serenity,
+    SpringAtTheShrine,
+    TokyoNight,
+    GraveyardOfTheFirefly,
+    DeepOcean,
+    MagicForest,
+    Swampy,
+    HarvestTime,
+}
+
+// ============================================================
+// THEME PALETTE STRUCTURE
+// ============================================================
+
+#[derive(Debug, Clone, Copy)]
+pub struct ThemePalette {
+    // Editor backgrounds
+    pub bg_main: Color,
+    pub bg_panel: Color,
+
+    // Syntax highlighting
+    pub keyword: Color,
+    pub type_color: Color,
+    pub number: Color,
+    pub string: Color,
+    pub function: Color,
+    pub text: Color,
+    pub comment: Color,
+
+    // UI
+    pub border: Color,
+    pub accent: Color,
+
+    // Status colors
+    pub success: Color,
+    pub error: Color,
+    pub warning: Color,
+    pub hint: Color,
+    pub unknown: Color,
+}
+
+// ============================================================
+// SERENITY — Calm, comfortable, muted pastels
+// ============================================================
+
+pub const SERENITY: ThemePalette = ThemePalette {
+    bg_main: Color::Rgb { r: 30, g: 30, b: 46 },
+    bg_panel: Color::Rgb { r: 24, g: 24, b: 37 },
+
+    keyword: Color::Rgb { r: 198, g: 160, b: 246 },
+    type_color: Color::Rgb { r: 232, g: 207, b: 161 },
+    number: Color::Rgb { r: 233, g: 173, b: 145 },
+    string: Color::Rgb { r: 166, g: 214, b: 174 },
+    function: Color::Rgb { r: 154, g: 188, b: 235 },
+    text: Color::Rgb { r: 197, g: 206, b: 229 },
+    comment: Color::Rgb { r: 148, g: 155, b: 181 },
+
+    border: Color::Rgb { r: 69, g: 72, b: 94 },
+    accent: Color::Rgb { r: 163, g: 185, b: 217 },
+
+    success: Color::Rgb { r: 166, g: 214, b: 174 },
+    error: Color::Rgb { r: 230, g: 160, b: 181 },
+    warning: Color::Rgb { r: 232, g: 207, b: 161 },
+    hint: Color::Rgb { r: 146, g: 212, b: 208 },
+    unknown: Color::Rgb { r: 229, g: 182, b: 194 },
+};
+
+// ============================================================
+// SPRING AT THE SHRINE — Sakura, sunlight, shrine vermilion
+// ============================================================
+
+pub const SPRING_AT_THE_SHRINE: ThemePalette = ThemePalette {
+    bg_main: Color::Rgb { r: 36, g: 42, b: 36 },
+    bg_panel: Color::Rgb { r: 28, g: 34, b: 29 },
+
+    keyword: Color::Rgb { r: 242, g: 166, b: 190 },
+    type_color: Color::Rgb { r: 238, g: 199, b: 139 },
+    number: Color::Rgb { r: 240, g: 151, b: 124 },
+    string: Color::Rgb { r: 169, g: 211, b: 157 },
+    function: Color::Rgb { r: 157, g: 195, b: 180 },
+    text: Color::Rgb { r: 225, g: 220, b: 202 },
+    comment: Color::Rgb { r: 145, g: 161, b: 140 },
+
+    border: Color::Rgb { r: 79, g: 99, b: 78 },
+    accent: Color::Rgb { r: 207, g: 111, b: 133 },
+
+    success: Color::Rgb { r: 155, g: 205, b: 143 },
+    error: Color::Rgb { r: 230, g: 119, b: 140 },
+    warning: Color::Rgb { r: 244, g: 194, b: 112 },
+    hint: Color::Rgb { r: 130, g: 205, b: 191 },
+    unknown: Color::Rgb { r: 239, g: 156, b: 183 },
+};
+
+// ============================================================
+// TOKYO NIGHT — Neon-lit city after dark
+// ============================================================
+
+pub const TOKYO_NIGHT: ThemePalette = ThemePalette {
+    bg_main: Color::Rgb { r: 26, g: 27, b: 38 },
+    bg_panel: Color::Rgb { r: 22, g: 22, b: 30 },
+
+    keyword: Color::Rgb { r: 187, g: 154, b: 247 },
+    type_color: Color::Rgb { r: 224, g: 175, b: 104 },
+    number: Color::Rgb { r: 255, g: 158, b: 100 },
+    string: Color::Rgb { r: 158, g: 206, b: 106 },
+    function: Color::Rgb { r: 122, g: 162, b: 247 },
+    text: Color::Rgb { r: 192, g: 202, b: 245 },
+    comment: Color::Rgb { r: 86, g: 95, b: 137 },
+
+    border: Color::Rgb { r: 65, g: 72, b: 104 },
+    accent: Color::Rgb { r: 125, g: 207, b: 195 },
+
+    success: Color::Rgb { r: 158, g: 206, b: 106 },
+    error: Color::Rgb { r: 247, g: 118, b: 142 },
+    warning: Color::Rgb { r: 224, g: 175, b: 104 },
+    hint: Color::Rgb { r: 125, g: 207, b: 195 },
+    unknown: Color::Rgb { r: 187, g: 154, b: 247 },
+};
+
+// ============================================================
+// GRAVEYARD OF THE FIREFLY — Fragile, temporary peace
+// ============================================================
+
+pub const GRAVEYARD_OF_THE_FIREFLY: ThemePalette = ThemePalette {
+    bg_main: Color::Rgb { r: 23, g: 25, b: 35 },
+    bg_panel: Color::Rgb { r: 32, g: 35, b: 43 },
+
+    keyword: Color::Rgb { r: 183, g: 165, b: 201 },
+    type_color: Color::Rgb { r: 216, g: 185, b: 133 },
+    number: Color::Rgb { r: 212, g: 155, b: 120 },
+    string: Color::Rgb { r: 166, g: 185, b: 154 },
+    function: Color::Rgb { r: 158, g: 173, b: 197 },
+    text: Color::Rgb { r: 202, g: 203, b: 194 },
+    comment: Color::Rgb { r: 133, g: 135, b: 151 },
+
+    border: Color::Rgb { r: 65, g: 70, b: 79 },
+    accent: Color::Rgb { r: 229, g: 190, b: 130 },
+
+    success: Color::Rgb { r: 166, g: 185, b: 154 },
+    error: Color::Rgb { r: 201, g: 137, b: 145 },
+    warning: Color::Rgb { r: 216, g: 185, b: 133 },
+    hint: Color::Rgb { r: 145, g: 177, b: 173 },
+    unknown: Color::Rgb { r: 196, g: 153, b: 164 },
+};
+
+// ============================================================
+// DEEP OCEAN — Quiet, cold, deep blue
+// ============================================================
+
+pub const DEEP_OCEAN: ThemePalette = ThemePalette {
+    bg_main: Color::Rgb { r: 16, g: 30, b: 43 },
+    bg_panel: Color::Rgb { r: 12, g: 23, b: 35 },
+
+    keyword: Color::Rgb { r: 120, g: 169, b: 214 },
+    type_color: Color::Rgb { r: 166, g: 196, b: 216 },
+    number: Color::Rgb { r: 114, g: 185, b: 204 },
+    string: Color::Rgb { r: 121, g: 198, b: 176 },
+    function: Color::Rgb { r: 85, g: 166, b: 209 },
+    text: Color::Rgb { r: 192, g: 213, b: 226 },
+    comment: Color::Rgb { r: 102, g: 137, b: 157 },
+
+    border: Color::Rgb { r: 48, g: 78, b: 96 },
+    accent: Color::Rgb { r: 112, g: 165, b: 198 },
+
+    success: Color::Rgb { r: 121, g: 198, b: 176 },
+    error: Color::Rgb { r: 220, g: 132, b: 145 },
+    warning: Color::Rgb { r: 213, g: 184, b: 125 },
+    hint: Color::Rgb { r: 106, g: 190, b: 207 },
+    unknown: Color::Rgb { r: 172, g: 153, b: 190 },
+};
+
+// ============================================================
+// MAGIC FOREST — Fresh, lush, relaxing nature
+// ============================================================
+
+pub const MAGIC_FOREST: ThemePalette = ThemePalette {
+    bg_main: Color::Rgb { r: 23, g: 37, b: 29 },
+    bg_panel: Color::Rgb { r: 29, g: 46, b: 35 },
+
+    keyword: Color::Rgb { r: 185, g: 201, b: 155 },
+    type_color: Color::Rgb { r: 213, g: 201, b: 155 },
+    number: Color::Rgb { r: 205, g: 169, b: 130 },
+    string: Color::Rgb { r: 159, g: 198, b: 155 },
+    function: Color::Rgb { r: 145, g: 188, b: 168 },
+    text: Color::Rgb { r: 208, g: 221, b: 201 },
+    comment: Color::Rgb { r: 130, g: 151, b: 131 },
+
+    border: Color::Rgb { r: 64, g: 91, b: 70 },
+    accent: Color::Rgb { r: 160, g: 195, b: 139 },
+
+    success: Color::Rgb { r: 159, g: 198, b: 155 },
+    error: Color::Rgb { r: 212, g: 135, b: 139 },
+    warning: Color::Rgb { r: 213, g: 201, b: 155 },
+    hint: Color::Rgb { r: 143, g: 192, b: 166 },
+    unknown: Color::Rgb { r: 190, g: 168, b: 187 },
+};
+
+// ============================================================
+// SWAMPY — Still water, moss, reeds, earthy greens
+// ============================================================
+
+pub const SWAMPY: ThemePalette = ThemePalette {
+    bg_main: Color::Rgb { r: 32, g: 40, b: 32 },
+    bg_panel: Color::Rgb { r: 41, g: 50, b: 41 },
+
+    keyword: Color::Rgb { r: 181, g: 188, b: 145 },
+    type_color: Color::Rgb { r: 198, g: 185, b: 148 },
+    number: Color::Rgb { r: 185, g: 155, b: 121 },
+    string: Color::Rgb { r: 158, g: 178, b: 138 },
+    function: Color::Rgb { r: 160, g: 182, b: 164 },
+    text: Color::Rgb { r: 208, g: 212, b: 189 },
+    comment: Color::Rgb { r: 141, g: 152, b: 133 },
+
+    border: Color::Rgb { r: 74, g: 89, b: 71 },
+    accent: Color::Rgb { r: 155, g: 174, b: 133 },
+
+    success: Color::Rgb { r: 158, g: 178, b: 138 },
+    error: Color::Rgb { r: 199, g: 128, b: 120 },
+    warning: Color::Rgb { r: 218, g: 184, b: 105 },
+    hint: Color::Rgb { r: 128, g: 178, b: 158 },
+    unknown: Color::Rgb { r: 190, g: 158, b: 137 },
+};
+
+// ============================================================
+// HARVEST TIME — Warm, expressive autumn colors
+// ============================================================
+
+pub const HARVEST_TIME: ThemePalette = ThemePalette {
+    bg_main: Color::Rgb { r: 41, g: 35, b: 31 },
+    bg_panel: Color::Rgb { r: 52, g: 42, b: 35 },
+
+    keyword: Color::Rgb { r: 230, g: 165, b: 107 },
+    type_color: Color::Rgb { r: 232, g: 200, b: 121 },
+    number: Color::Rgb { r: 217, g: 140, b: 114 },
+    string: Color::Rgb { r: 169, g: 189, b: 130 },
+    function: Color::Rgb { r: 214, g: 166, b: 200 },
+    text: Color::Rgb { r: 240, g: 223, b: 196 },
+    comment: Color::Rgb { r: 174, g: 155, b: 131 },
+
+    border: Color::Rgb { r: 102, g: 80, b: 59 },
+    accent: Color::Rgb { r: 214, g: 166, b: 200 },
+
+    success: Color::Rgb { r: 169, g: 189, b: 130 },
+    error: Color::Rgb { r: 217, g: 130, b: 120 },
+    warning: Color::Rgb { r: 232, g: 200, b: 121 },
+    hint: Color::Rgb { r: 131, g: 189, b: 176 },
+    unknown: Color::Rgb { r: 201, g: 155, b: 183 },
+};
+
+// ============================================================
+// PALETTE LOOKUP
+// ============================================================
+
+pub fn palette_for(theme: Theme) -> &'static ThemePalette {
+    match theme {
+        Theme::Serenity => &SERENITY,
+        Theme::SpringAtTheShrine => &SPRING_AT_THE_SHRINE,
+        Theme::TokyoNight => &TOKYO_NIGHT,
+        Theme::GraveyardOfTheFirefly => &GRAVEYARD_OF_THE_FIREFLY,
+        Theme::DeepOcean => &DEEP_OCEAN,
+        Theme::MagicForest => &MAGIC_FOREST,
+        Theme::Swampy => &SWAMPY,
+        Theme::HarvestTime => &HARVEST_TIME,
+    }
+}
+
+// ============================================================
+// STATUS SYSTEM
+// ============================================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Status {
+    Success,
+    Error,
+    Warning,
+    Hint,
+    UnknownCommand,
+    UnknownCode,
+    Modified,
+    Saved,
+}
+
+pub fn color_for_status_in(theme: Theme, status: Status) -> Color {
+    let palette = palette_for(theme);
+
+    match status {
+        Status::Success | Status::Saved => palette.success,
+        Status::Error => palette.error,
+        Status::Warning | Status::Modified => palette.warning,
+        Status::Hint => palette.hint,
+        Status::UnknownCommand | Status::UnknownCode => palette.unknown,
+    }
+}
+
+pub fn attribute_for_status(status: Status) -> Attribute {
+    match status {
+        Status::Error | Status::UnknownCommand | Status::Warning | Status::Modified => Attribute::Bold,
+        _ => Attribute::Reset,
+    }
+}// diagnostics.rs
+#[derive(Debug, Clone)]
+pub struct Diagnostic {
+    
+    pub line: usize,
+    pub message: String,
+    pub severity: Option<u8>,
+}use anyhow::{Context, Result};
+use ratatui::{
+    style::{Color, Style},
+    text::{Line, Span},
+};
+use std::fs;
+use unicode_width::UnicodeWidthStr;
+
+#[derive(Default, Debug, Clone)]
+pub struct Cursor {
+    pub row: usize,
+    pub col: usize, // Character index in current line
+}
+
+pub struct Editor {
+    pub filename: Option<String>,
+    pub lines: Vec<String>,
+    pub cursor: Cursor,
+    pub is_dirty: bool,
+    pub row_offset: usize,
+    pub col_offset: usize, // Measured in visual terminal columns
+}
+
+impl Editor {
+    pub fn new() -> Self {
+        Self {
+            filename: None,
+            lines: vec![String::new()],
+            cursor: Cursor { row: 0, col: 0 },
+            is_dirty: false,
+            row_offset: 0,
+            col_offset: 0,
+        }
+    }
+
+    /// Helper to convert a character column index into a UTF-8 byte offset
+    pub fn char_to_byte_idx(s: &str, char_idx: usize) -> usize {
+        s.char_indices()
+            .nth(char_idx)
+            .map(|(idx, _)| idx)
+            .unwrap_or_else(|| s.len())
+    }
+
+    /// Calculate visual display column on terminal (accounts for wide 2-cell CJK/Emoji characters)
+    pub fn visual_cursor_col(&self) -> usize {
+        if let Some(line) = self.lines.get(self.cursor.row) {
+            line.chars()
+                .take(self.cursor.col)
+                .map(|c| {
+                    let mut buf = [0; 4];
+                    let str_slice = c.encode_utf8(&mut buf);
+                    UnicodeWidthStr::width(str_slice)
+                })
+                .sum()
+        } else {
+            0
+        }
+    }
+
+    /// Keep the cursor within viewable window bounds using visual widths
+    pub fn scroll_into_view(&mut self, visible_width: usize, visible_height: usize) {
+        if visible_height == 0 || visible_width == 0 {
+            return;
+        }
+
+        // Vertical Scrolling
+        if self.cursor.row < self.row_offset {
+            self.row_offset = self.cursor.row;
+        } else if self.cursor.row >= self.row_offset + visible_height {
+            self.row_offset = self.cursor.row - visible_height + 1;
+        }
+
+        // Horizontal Scrolling using visual terminal width
+        let visual_col = self.visual_cursor_col();
+        if visual_col < self.col_offset {
+            self.col_offset = visual_col;
+        } else if visual_col >= self.col_offset + visible_width {
+            self.col_offset = visual_col - visible_width + 1;
+        }
+    }
+
+    /// UI Helper: Generates formatted Ratatui lines for the editor view port
+    pub fn render_visible_lines(
+        &mut self,
+        width: usize,
+        height: usize,
+        text_color: Color,
+        comment_color: Color,
+    ) -> Vec<Line<'static>> {
+        self.scroll_into_view(width, height);
+
+        self.lines
+            .iter()
+            .enumerate()
+            .skip(self.row_offset)
+            .take(height)
+            .map(|(i, l)| {
+                let display_str: String = l
+                    .chars()
+                    .skip(self.col_offset)
+                    .take(width)
+                    .collect();
+                Line::from(vec![
+                    Span::styled(format!("{:3} │ ", i + 1), Style::default().fg(comment_color)),
+                    Span::styled(display_str, Style::default().fg(text_color)),
+                ])
+            })
+            .collect()
+    }
+
+    /// Load a file from disk into the editor buffer
+    pub fn open(&mut self, path: &str) -> Result<()> {
+        let content = fs::read_to_string(path)
+            .with_context(|| format!("Failed to read file: {}", path))?;
+
+        self.lines = if content.is_empty() {
+            vec![String::new()]
+        } else {
+            content.lines().map(|s| s.to_string()).collect()
+        };
+
+        self.filename = Some(path.to_string());
+        self.cursor = Cursor { row: 0, col: 0 };
+        self.row_offset = 0;
+        self.col_offset = 0;
+        self.is_dirty = false;
+        Ok(())
+    }
+
+    /// Save current editor buffer back to disk
+    pub fn save(&mut self) -> Result<String> {
+        if let Some(ref path) = self.filename {
+            let mut content = self.lines.join("\n");
+            content.push('\n'); // POSIX-compliant trailing newline
+
+            fs::write(path, content)
+                .with_context(|| format!("Failed to save file: {}", path))?;
+            self.is_dirty = false;
+            Ok(format!("Saved to {}", path))
+        } else {
+            Ok("No file name provided. Use 'new <filename>' or 'save <filename>'".to_string())
+        }
+    }
+
+    /// Insert a character at current cursor position safely
+    pub fn insert_char(&mut self, c: char) {
+        if self.lines.is_empty() {
+            self.lines.push(String::new());
+        }
+        let line = &mut self.lines[self.cursor.row];
+        let byte_idx = Self::char_to_byte_idx(line, self.cursor.col);
+        line.insert(byte_idx, c);
+        self.cursor.col += 1;
+        self.is_dirty = true;
+    }
+
+    /// Handle newline keypress (Enter) safely
+    pub fn insert_newline(&mut self) {
+        if self.lines.is_empty() {
+            self.lines.push(String::new());
+            self.cursor.row = 0;
+            self.cursor.col = 0;
+            return;
+        }
+        let current_line = &mut self.lines[self.cursor.row];
+        let byte_idx = Self::char_to_byte_idx(current_line, self.cursor.col);
+        let remainder = current_line.split_off(byte_idx);
+        self.lines.insert(self.cursor.row + 1, remainder);
+        self.cursor.row += 1;
+        self.cursor.col = 0;
+        self.is_dirty = true;
+    }
+
+    /// Delete character behind cursor (Backspace) safely
+    pub fn backspace(&mut self) {
+        if self.cursor.col > 0 {
+            let line = &mut self.lines[self.cursor.row];
+            let target_char_idx = self.cursor.col - 1;
+
+            if let Some((byte_idx, _)) = line.char_indices().nth(target_char_idx) {
+                line.remove(byte_idx);
+                self.cursor.col -= 1;
+                self.is_dirty = true;
+            }
+        } else if self.cursor.row > 0 {
+            // Join current line to previous line
+            let current_line = self.lines.remove(self.cursor.row);
+            self.cursor.row -= 1;
+            self.cursor.col = self.lines[self.cursor.row].chars().count();
+            self.lines[self.cursor.row].push_str(&current_line);
+            self.is_dirty = true;
+        }
+    }
+
+    /// Delete character under cursor (Delete key) safely
+    pub fn delete_char(&mut self) {
+        if self.lines.is_empty() {
+            return;
+        }
+        let line_char_count = self.lines[self.cursor.row].chars().count();
+
+        if self.cursor.col < line_char_count {
+            let line = &mut self.lines[self.cursor.row];
+            if let Some((byte_idx, _)) = line.char_indices().nth(self.cursor.col) {
+                line.remove(byte_idx);
+                self.is_dirty = true;
+            }
+        } else if self.cursor.row + 1 < self.lines.len() {
+            // Pull next line up into current line
+            let next_line = self.lines.remove(self.cursor.row + 1);
+            self.lines[self.cursor.row].push_str(&next_line);
+            self.is_dirty = true;
+        }
+    }
+
+    /// Safely move cursor left, right, up, down with line wrapping
+    pub fn move_cursor(&mut self, row_delta: isize, col_delta: isize) {
+        if self.lines.is_empty() {
+            return;
+        }
+
+        // Handle Row Movement
+        if row_delta != 0 {
+            let new_row = self.cursor.row as isize + row_delta;
+            if new_row >= 0 && (new_row as usize) < self.lines.len() {
+                self.cursor.row = new_row as usize;
+                let max_col = self.lines[self.cursor.row].chars().count();
+                self.cursor.col = self.cursor.col.min(max_col);
+            }
+        }
+
+        // Handle Col Movement
+        if col_delta < 0 {
+            if self.cursor.col > 0 {
+                self.cursor.col -= 1;
+            } else if self.cursor.row > 0 {
+                self.cursor.row -= 1;
+                self.cursor.col = self.lines[self.cursor.row].chars().count();
+            }
+        } else if col_delta > 0 {
+            let max_col = self.lines[self.cursor.row].chars().count();
+            if self.cursor.col < max_col {
+                self.cursor.col += 1;
+            } else if self.cursor.row + 1 < self.lines.len() {
+                self.cursor.row += 1;
+                self.cursor.col = 0;
+            }
+        }
+    }
+}// src/lsp.rs
+use anyhow::{anyhow, Result};
+use serde_json::{json, Value};
+use std::collections::HashMap;
+use std::path::Path;
+use std::process::Stdio;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+use tokio::process::{Child, Command};
+use tokio::sync::mpsc;
+
+use crate::diagnostics::Diagnostic;
+use crate::lsp_writer::LspWriter;
+
+pub struct LspClient {
+    pub server_name: String,
+    pub language_id: String,
+    _child: Option<Child>,
+    writer: Option<LspWriter>,
+}
+
+impl LspClient {
+    pub fn new() -> Self {
+        Self {
+            server_name: "Disconnected".to_string(),
+            language_id: "plaintext".to_string(),
+            _child: None,
+            writer: None,
+        }
+    }
+
+    /// Initializes the LSP at the workspace (directory) level for a specific language.
+    pub async fn init_workspace(
+        &mut self,
+        lsp_cmd: &str,
+        language_id: &str,
+        workspace_dir: &str,
+        diag_tx: mpsc::UnboundedSender<(String, Vec<Diagnostic>)>,
+    ) -> Result<()> {
+        // 1. Kill old process if one exists
+        if let Some(mut old_child) = self._child.take() {
+            let _ = old_child.kill().await;
+        }
+
+        // 2. Safely split the command string into executable and arguments
+        let mut parts = lsp_cmd.split_whitespace();
+        let program = parts.next().ok_or_else(|| anyhow!("Empty LSP command provided"))?;
+        let args: Vec<&str> = parts.collect();
+
+        // 3. Spawn LSP process
+        let mut child = Command::new(program)
+            .args(&args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| {
+                self.server_name = format!("Failed to launch {}", program);
+                anyhow!("Failed to spawn LSP process '{}': {}", lsp_cmd, e)
+            })?;
+
+        self.server_name = lsp_cmd.to_string();
+        self.language_id = language_id.to_string();
+        
+        let active_lang = language_id.to_string();
+
+        let stdin = child.stdin.take().expect("Failed to open stdin");
+        let stdout = child.stdout.take().expect("Failed to open stdout");
+
+        self._child = Some(child);
+
+        // 4. Spawn background writer
+        let writer = LspWriter::spawn(stdin);
+        self.writer = Some(writer.clone());
+
+        let root_uri = get_file_uri(workspace_dir);
+
+        // --- STEP 1: Send the initialize request ---
+        let init_req = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "processId": std::process::id(),
+                "rootUri": root_uri,
+                "workspaceFolders": [{
+                    "uri": &root_uri,
+                    "name": "workspace"
+                }],
+                "capabilities": {
+                    "workspace": {
+                        "workspaceFolders": true
+                    },
+                    "textDocument": {
+                        "synchronization": {
+                            "dynamicRegistration": false,
+                            "willSave": false,
+                            "willSaveWaitUntil": false,
+                            "didSave": false
+                        },
+                        "publishDiagnostics": {
+                            "relatedInformation": true
+                        }
+                    }
+                }
+            }
+        });
+        writer.send(init_req)?;
+
+        // --- STEP 2: Wait specifically for the initialization response ---
+        let mut reader = BufReader::new(stdout);
+        loop {
+            let msg = read_lsp_message(&mut reader).await?;
+            if let Ok(json) = serde_json::from_slice::<Value>(&msg) {
+                if json.get("id").and_then(|id| id.as_u64()) == Some(1) {
+                    break;
+                }
+            }
+        }
+
+        // --- STEP 3: Send initialized notification ---
+        let initialized_notif = json!({
+            "jsonrpc": "2.0",
+            "method": "initialized",
+            "params": {}
+        });
+        writer.send(initialized_notif)?;
+
+        // --- STEP 4: Start background diagnostic listener ---
+        tokio::spawn(async move {
+            while let Ok(body) = read_lsp_message(&mut reader).await {
+                if let Ok(json) = serde_json::from_slice::<Value>(&body) {
+                    if json.get("method").and_then(|m| m.as_str()) == Some("textDocument/publishDiagnostics") {
+                        if let Some(uri) = json.pointer("/params/uri").and_then(|u| u.as_str()) {
+                            
+                            // Extract path and filter by target language
+                            let path = uri.strip_prefix("file://").unwrap_or(uri);
+                            if get_language_id(path) != active_lang {
+                                continue; // Silently drop diagnostics for other languages
+                            }
+
+                            let file_uri = uri.to_string();
+
+                            if let Some(diags_array) = json.pointer("/params/diagnostics").and_then(|d| d.as_array()) {
+                                let parsed_diags: Vec<Diagnostic> = diags_array.iter().map(|d| {
+                                    let line = d.pointer("/range/start/line")
+                                        .and_then(|l| l.as_u64())
+                                        .unwrap_or(0) as usize + 1;
+                                    
+                                    let message = d.get("message")
+                                        .and_then(|m| m.as_str())
+                                        .unwrap_or("Unknown error")
+                                        .to_string();
+                                        
+                                    let severity = d.get("severity")
+                                        .and_then(|s| s.as_u64())
+                                        .map(|n| n as u8);
+                                        
+                                    Diagnostic { 
+                                        line, 
+                                        message, 
+                                        severity 
+                                    }
+                                }).collect();
+
+                                let _ = diag_tx.send((file_uri, parsed_diags));
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        Ok(())
+    }
+
+    /// Called when the user opens a specific file in the editor
+    pub fn open_file(&self, filename: &str, text: &str) -> Result<()> {
+        if get_language_id(filename) != self.language_id {
+            return Ok(());
+        }
+
+        let did_open_req = json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": get_file_uri(filename),
+                    "languageId": get_language_id(filename),
+                    "version": 1,
+                    "text": text
+                }
+            }
+        });
+
+        if let Some(writer) = &self.writer {
+            writer.send(did_open_req)?;
+        }
+        Ok(())
+    }
+
+    /// Called when the user types/modifies the file
+    pub fn notify_change(&self, filename: &str, version: u32, text: &str) -> Result<()> {
+        if get_language_id(filename) != self.language_id {
+            return Ok(());
+        }
+
+        let did_change_req = json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didChange",
+            "params": {
+                "textDocument": {
+                    "uri": get_file_uri(filename),
+                    "version": version
+                },
+                "contentChanges": [
+                    { "text": text }
+                ]
+            }
+        });
+
+        if let Some(writer) = &self.writer {
+            writer.send(did_change_req)?;
+        }
+        
+        Ok(())
+    }
+}
+
+impl Drop for LspClient {
+    fn drop(&mut self) {
+        if let Some(mut child) = self._child.take() {
+            let _ = child.start_kill();
+        }
+    }
+}
+
+impl Default for LspClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// --- Directory Scanning Logic ---
+
+/// Scans the directory recursively to find the most used language.
+pub fn detect_workspace_language(dir: &str) -> Option<&'static str> {
+    let path = Path::new(dir);
+    let mut ext_counts: HashMap<&'static str, usize> = HashMap::new();
+
+    fn visit_dirs(dir: &Path, counts: &mut HashMap<&'static str, usize>) {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    let name = path.file_name().unwrap_or_default().to_string_lossy();
+                    if name.starts_with('.') || name == "target" || name == "node_modules" || name == "build" {
+                        continue;
+                    }
+                    visit_dirs(&path, counts);
+                } else if path.is_file() {
+                    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                    let dummy_file = format!("f.{}", ext);
+                    let lang = get_language_id(&dummy_file);
+                    if lang != "plaintext" {
+                        *counts.entry(lang).or_insert(0) += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    visit_dirs(path, &mut ext_counts);
+
+    ext_counts
+        .into_iter()
+        .max_by_key(|&(_, count)| count)
+        .map(|(lang, _)| lang)
+}
+
+// --- Helper Functions ---
+
+async fn read_lsp_message<R: AsyncBufReadExt + Unpin>(reader: &mut R) -> Result<Vec<u8>> {
+    let mut len = 0;
+    loop {
+        let mut header_line = String::new();
+        if reader.read_line(&mut header_line).await? == 0 {
+            return Err(anyhow!("LSP stream closed prematurely"));
+        }
+        
+        let header_line = header_line.trim();
+        if header_line.is_empty() {
+            break;
+        }
+        
+        if let Some(len_str) = header_line.strip_prefix("Content-Length:") {
+            len = len_str.trim().parse::<usize>()?;
+        }
+    }
+
+    if len == 0 {
+        return Err(anyhow!("Missing or invalid Content-Length header"));
+    }
+
+    let mut body = vec![0; len];
+    reader.read_exact(&mut body).await?;
+    
+    Ok(body)
+}
+
+fn get_file_uri(filename: &str) -> String {
+    let file_path = std::fs::canonicalize(filename)
+        .unwrap_or_else(|_| std::env::current_dir().unwrap_or_default().join(filename));
+    url::Url::from_file_path(file_path)
+        .map(|u| u.to_string())
+        .unwrap_or_else(|_| format!("file://{}", filename))
+}
+
+pub fn get_language_id(filename: &str) -> &'static str {
+    let lowercase_name = filename.to_lowercase();
+    
+    // ==========================================
+    // 🔀 FILENAME OVERRIDES (No Uniform Extensions)
+    // ==========================================
+    if lowercase_name.ends_with("dockerfile") || lowercase_name.starts_with("dockerfile.") {
+        return "dockerfile";
+    }
+    if lowercase_name == "makefile" || lowercase_name.ends_with(".mk") {
+        return "makefile";
+    }
+    if lowercase_name == "jenkinsfile" {
+        return "jenkinsfile";
+    }
+    if lowercase_name == "cmakelists.txt" {
+        return "cmake";
+    }
+
+    let ext = filename.rsplit('.').next().unwrap_or("");
+    match ext {
+        // ==========================================
+        // 🚀 SYSTEMS & NATIVE LANGUAGES
+        // ==========================================
+        "rs" => "rust",
+        "zig" => "zig",
+        "c" => "c",
+        "cpp" | "cxx" | "cc" | "h" | "hpp" => "cpp",
+        "go" => "go",
+        "d" | "di" => "d",
+        "nim" => "nim",
+        "v" => "v",
+        "asm" | "s" => "assembly",
+
+        // ==========================================
+        // 🎮 GAME DEVELOPMENT & GRAPHICS SHADERS
+        // ==========================================
+        "gd" => "gdscript",
+        "cs" => "csharp",
+        "glsl" | "vert" | "frag" | "geom" | "comp" => "glsl",
+        "hlsl" | "fx" | "hlsli" => "hlsl",
+        "wgsl" => "wgsl",
+        "shader" => "unity-shader",
+        "brres" | "gsh" => "graphics-resource", 
+
+        // ==========================================
+        // ☕ GENERAL PURPOSE & ENTERPRISE
+        // ==========================================
+        "java" => "java",
+        "kt" | "kts" => "kotlin",
+        "scala" | "sc" => "scala",
+        "swift" => "swift",
+        "oc" | "m" | "mm" => "objective-c",
+        "adb" | "ads" | "ada" | "gpr" => "ada",
+
+        // ==========================================
+        // 🐍 SCRIPTING & DYNAMIC LANGUAGES
+        // ==========================================
+        "py" | "pyw" => "python",
+        "rb" | "rbw" | "gemspec" => "ruby",
+        "php" => "php",
+        "pl" | "pm" | "t" => "perl",
+        "lua" => "lua",
+        "tcl" => "tcl",
+
+        // ==========================================
+        // 🌐 WEB DEVELOPMENT (Core, Frameworks, CSS)
+        // ==========================================
+        "js" | "jsx" | "mjs" | "cjs" => "javascript",
+        "ts" | "tsx" | "mts" | "cts" => "typescript",
+        "html" | "htm" => "html",
+        "css" => "css",
+        "scss" => "scss",
+        "less" => "less",
+        "svelte" => "svelte",
+        "vue" => "vue",
+        "astro" => "astro",
+        "graphql" | "gql" => "graphql",
+
+        // ==========================================
+        // 🧠 FUNCTIONAL LANGUAGES
+        // ==========================================
+        "hs" | "lhs" => "haskell",
+        "ml" | "mli" => "ocaml",
+        "ex" | "exs" => "elixir",
+        "erl" | "hrl" => "erlang",
+        "clj" | "cljs" | "edn" => "clojure",
+        "gleam" => "gleam",
+
+        // ==========================================
+        // 📊 DATA SCIENCE, MATH & BLOCKCHAIN
+        // ==========================================
+        "jl" => "julia",
+        "r" | "rmd" => "r",
+        "sol" => "solidity",
+        "move" => "move",
+
+        // ==========================================
+        // 🐚 SHELL & AUTOMATION
+        // ==========================================
+        "sh" | "bash" | "zsh" => "bash",
+        "ps1" | "psm1" => "powershell",
+
+        // ==========================================
+        // 🛠️ DEVOPS, INFRASTRUCTURE & CONFIGS
+        // ==========================================
+        "json" | "jsonc" => "json",
+        "yaml" | "yml" => "yaml",
+        "toml" => "toml",
+        "ini" | "cfg" | "conf" => "ini",
+        "xml" | "xsd" | "xsl" => "xml",
+        "tf" | "tfvars" => "terraform",
+        "proto" => "protobuf",
+        "env" => "dotenv",
+        "cmake" => "cmake",
+        "nix" => "nix",
+        "dockerfile" | "docker" => "dockerfile",
+        "wit" => "wit",
+
+        // ==========================================
+        // 📝 DATA FILES & DOCUMENTATION
+        // ==========================================
+        "sql" => "sql",
+        "csv" => "csv",
+        "tsv" => "tsv",
+        "md" | "markdown" => "markdown",
+        "tex" | "latex" => "latex",
+        "rst" => "restructuredtext",
+        "asciidoc" | "adoc" => "asciidoc",
+        "org" => "org",
+        "diff" | "patch" => "diff",
+
+        // ==========================================
+        // 📄 FALLBACK
+        // ==========================================
+        _ => "plaintext",
+    }
+}use tokio::sync::mpsc;
+use tokio::io::AsyncWriteExt;
+use serde_json::Value;
+use anyhow::Result;
+
+#[derive(Clone)]
+pub struct LspWriter {
+    tx: mpsc::UnboundedSender<Value>,
+}
+
+impl LspWriter {
+    /// Spawns a dedicated background task owning `stdin` so the pipe is never dropped.
+    pub fn spawn(mut stdin: tokio::process::ChildStdin) -> Self {
+        let (tx, mut rx) = mpsc::unbounded_channel::<Value>();
+
+        tokio::spawn(async move {
+            while let Some(msg) = rx.recv().await {
+                let msg_str = msg.to_string();
+                let payload = format!("Content-Length: {}\r\n\r\n{}", msg_str.len(), msg_str);
+
+                if stdin.write_all(payload.as_bytes()).await.is_err() || stdin.flush().await.is_err() {
+                    break; // Process terminated or pipe closed
+                }
+            }
+        });
+
+        Self { tx }
+    }
+
+    /// Non-blocking method to queue JSON-RPC payloads to the LSP server.
+    pub fn send(&self, msg: Value) -> Result<()> {
+        self.tx.send(msg)?;
+        Ok(())
+    }
+}// src/main.rs
+#![warn(clippy::all, clippy::perf)]
+
+mod editor;
+mod palette;
+mod terminal;
+mod lsp;
+mod diagnostics;
+mod process;
+mod colors;
+mod tracer;
+mod lsp_writer;
+mod ai;
+mod clipboard;
+
+use anyhow::Result;
+use colors::{palette_for, Theme};
+use crossterm::{
+    event::{self, Event, KeyCode, KeyModifiers},
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+};
+use editor::Editor;
+use lsp::LspClient;
+use palette::Palette;
+use ratatui::{
+    backend::CrosstermBackend,
+    layout::{Constraint, Direction, Layout, Position, Rect},
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, Clear, Paragraph},
+    Terminal,
+};
+use std::{
+    collections::HashMap,
+    io::stdout,
+    time::Duration,
+};
+use tokio::sync::mpsc;
+
+fn to_ratatui_color(c: crossterm::style::Color) -> Color {
+    match c {
+        crossterm::style::Color::Rgb { r, g, b } => Color::Rgb(r, g, b),
+        crossterm::style::Color::Black => Color::Black,
+        crossterm::style::Color::DarkGrey => Color::DarkGray,
+        crossterm::style::Color::Red => Color::Red,
+        crossterm::style::Color::DarkRed => Color::Indexed(52),
+        crossterm::style::Color::Green => Color::Green,
+        crossterm::style::Color::DarkGreen => Color::Indexed(22),
+        crossterm::style::Color::Yellow => Color::Yellow,
+        crossterm::style::Color::DarkYellow => Color::Indexed(136),
+        crossterm::style::Color::Blue => Color::Blue,
+        crossterm::style::Color::DarkBlue => Color::Indexed(18),
+        crossterm::style::Color::Magenta => Color::Magenta,
+        crossterm::style::Color::DarkMagenta => Color::Indexed(90),
+        crossterm::style::Color::Cyan => Color::Cyan,
+        crossterm::style::Color::DarkCyan => Color::Indexed(30),
+        crossterm::style::Color::White => Color::White,
+        crossterm::style::Color::Grey => Color::Gray,
+        _ => Color::Reset,
+    }
+}
+
+struct AppState {
+    editor: Editor,
+    palette: Palette,
+    lsp_client: LspClient,
+    current_diagnostics: HashMap<String, Vec<diagnostics::Diagnostic>>,
+    command_history: Vec<(String, bool)>,
+    clipboard: String,
+    doc_version: u32,
+    buffer_cache: HashMap<String, Vec<String>>,
+    pub should_exit: bool,
+    show_lsp_pane: bool,
+    pub show_ai_chat: bool,
+    pub ai_input_buffer: String,
+    pub ai_messages: Vec<(String, String)>,
+    pub show_symbol_finder: bool,
+    pub symbol_query: String,
+    pub symbol_selected_idx: usize,
+    pub current_theme: Theme,
+}
+
+impl AppState {
+    fn new() -> Self {
+        Self {
+            editor: Editor::new(),
+            palette: Palette::new(),
+            lsp_client: LspClient::new(),
+            current_diagnostics: HashMap::new(),
+            command_history: Vec::new(),
+            clipboard: String::new(),
+            doc_version: 1,
+            buffer_cache: HashMap::new(),
+            should_exit: false,
+            show_lsp_pane: false,
+            show_ai_chat: false,
+            ai_input_buffer: String::new(),
+            ai_messages: Vec::new(),
+            show_symbol_finder: false,
+            symbol_query: String::new(),
+            symbol_selected_idx: 0,
+            current_theme: Theme::Serenity,
+        }
+    }
+
+    fn normalize_path(path_str: &str) -> String {
+        std::fs::canonicalize(path_str).map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|_| path_str.to_string())
+    }
+
+    fn cache_current_buffer(&mut self) {
+        if let Some(ref filename) = self.editor.filename {
+            let key = Self::normalize_path(filename);
+            self.buffer_cache.insert(key, self.editor.lines.clone());
+        }
+    }
+
+    fn open_buffered_file(&mut self, path_str: &str) -> Result<()> {
+        self.cache_current_buffer();
+        let canonical_path = Self::normalize_path(path_str);
+        if let Some(cached_lines) = self.buffer_cache.get(&canonical_path) {
+            self.editor.lines = cached_lines.clone();
+            self.editor.filename = Some(canonical_path);
+            self.editor.cursor = editor::Cursor { row: 0, col: 0 };
+            self.editor.is_dirty = true;
+        } else {
+            self.editor.open(path_str)?;
+            self.buffer_cache.insert(canonical_path.clone(), self.editor.lines.clone());
+            self.editor.filename = Some(canonical_path);
+        }
+        Ok(())
+    }
+
+    fn new_buffered_file(&mut self, path_str: &str) -> Result<()> {
+        self.cache_current_buffer();
+        let canonical_path = Self::normalize_path(path_str);
+        self.editor.filename = Some(canonical_path.clone());
+        self.editor.lines = vec![String::new()];
+        self.editor.cursor = editor::Cursor { row: 0, col: 0 };
+        self.editor.is_dirty = true;
+        self.buffer_cache.insert(canonical_path, self.editor.lines.clone());
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    fn save_all_buffers(&mut self) -> Result<String, String> {
+        self.cache_current_buffer();
+        if self.buffer_cache.is_empty() {
+            return match self.editor.save() {
+                Ok(msg) => Ok(msg),
+                Err(e) => Err(e.to_string()),
+            };
+        }
+        let mut saved_count = 0;
+        for (path_str, lines) in &self.buffer_cache {
+            let mut content = lines.join("\n");
+            content.push('\n');
+            std::fs::write(path_str, content).map_err(|e| format!("Failed to save {}: {}", path_str, e))?;
+            saved_count += 1;
+        }
+        self.editor.is_dirty = false;
+        Ok(format!("Successfully saved {} buffer(s) to disk.", saved_count))
+    }
+
+    async fn handle_input(&mut self, key: crossterm::event::KeyEvent, diag_tx: &mpsc::UnboundedSender<(String, Vec<diagnostics::Diagnostic>)>) -> bool {
+        if terminal::is_esc(&key) {
+            if self.show_symbol_finder {
+                self.show_symbol_finder = false;
+            } else if self.show_ai_chat {
+                self.show_ai_chat = false;
+            } else if self.palette.is_active {
+                self.palette.is_active = false;
+            }
+        } else if key.modifiers.contains(KeyModifiers::ALT) && key.code == KeyCode::Char('d') {
+            self.show_symbol_finder = !self.show_symbol_finder;
+            self.symbol_query.clear();
+            self.symbol_selected_idx = 0;
+        } else if self.show_symbol_finder {
+            self.handle_symbol_finder_input(key);
+        } else if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('a') {
+            self.show_ai_chat = !self.show_ai_chat;
+        } else if self.show_ai_chat {
+            self.handle_ai_chat_input(key).await;
+        } else if terminal::is_alt_t(&key) {
+            self.palette.is_active = !self.palette.is_active;
+        } else if terminal::is_alt_l(&key) {
+            self.show_lsp_pane = !self.show_lsp_pane;
+        } else if self.palette.is_active {
+            self.handle_terminal_input(key, diag_tx).await;
+        } else {
+            self.handle_editor_input(key);
+        }
+        true
+    }
+
+    fn handle_symbol_finder_input(&mut self, key: crossterm::event::KeyEvent) {
+        match key.code {
+            KeyCode::Esc => self.show_symbol_finder = false,
+            KeyCode::Char(c) => {
+                self.symbol_query.push(c);
+                self.symbol_selected_idx = 0;
+            }
+            KeyCode::Backspace => {
+                self.symbol_query.pop();
+                self.symbol_selected_idx = 0;
+            }
+            KeyCode::Up => {
+                self.symbol_selected_idx = self.symbol_selected_idx.saturating_sub(1);
+            }
+            KeyCode::Down => {
+                let max_matches = self.get_filtered_symbols().len();
+                if max_matches > 0 && self.symbol_selected_idx + 1 < max_matches {
+                    self.symbol_selected_idx += 1;
+                }
+            }
+            KeyCode::Enter => {
+                let matches = self.get_filtered_symbols();
+                if let Some((line_idx, _)) = matches.get(self.symbol_selected_idx) {
+                    self.editor.cursor.row = *line_idx;
+                    self.editor.cursor.col = 0;
+                }
+                self.show_symbol_finder = false;
+            }
+            _ => {}
+        }
+    }
+
+    fn get_filtered_symbols(&self) -> Vec<(usize, String)> {
+        self.editor.lines.iter().enumerate().filter_map(|(idx, line)| {
+            let trimmed = line.trim();
+            if trimmed.starts_with("fn ") || trimmed.starts_with("pub fn ") || trimmed.starts_with("async fn ") {
+                let func_name = trimmed.trim_end_matches('{').trim();
+                if self.symbol_query.is_empty() || func_name.to_lowercase().contains(&self.symbol_query.to_lowercase()) {
+                    return Some((idx, format!("L{}: {}", idx + 1, func_name)));
+                }
+            }
+            None
+        }).collect()
+    }
+
+    async fn handle_ai_chat_input(&mut self, key: crossterm::event::KeyEvent) {
+        match key.code {
+            KeyCode::Enter => {
+                let prompt = self.ai_input_buffer.trim().to_string();
+                self.ai_input_buffer.clear();
+                if !prompt.is_empty() {
+                    self.ai_messages.push(("user".to_string(), prompt));
+                    let root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                    let messages = self.ai_messages.clone();
+                    match ai::run_chat_stream(&root, messages).await {
+                        Ok(res) => self.ai_messages.push(("assistant".to_string(), res)),
+                        Err(e) => self.ai_messages.push(("assistant".to_string(), format!("Error: {}", e))),
+                    }
+                }
+            }
+            KeyCode::Char(c) => self.ai_input_buffer.push(c),
+            KeyCode::Backspace => { self.ai_input_buffer.pop(); }
+            _ => {}
+        }
+    }
+
+    async fn handle_terminal_input(&mut self, key: crossterm::event::KeyEvent, diag_tx: &mpsc::UnboundedSender<(String, Vec<diagnostics::Diagnostic>)>) {
+        match key.code {
+            KeyCode::Enter => {
+                let raw_input = self.palette.input_buffer.trim().to_string();
+                if let Some(theme_name) = raw_input.strip_prefix("theme:") {
+                    let t = match theme_name.trim().to_lowercase().as_str() {
+                        "shrine" => Theme::SpringAtTheShrine,
+                        "tokyo" => Theme::TokyoNight,
+                        "firefly" => Theme::GraveyardOfTheFirefly,
+                        "ocean" => Theme::DeepOcean,
+                        "forest" => Theme::MagicForest,
+                        "swamp" => Theme::Swampy,
+                        "harvest" => Theme::HarvestTime,
+                        _ => Theme::Serenity,
+                    };
+                    self.current_theme = t;
+                    self.command_history.push((format!("Theme switched to {:?}", t), true));
+                    self.palette.input_buffer.clear();
+                    return;
+                }
+
+                let action = self.palette.parse_command(self.editor.filename.as_deref());
+                match action {
+                    palette::PaletteAction::Quit => {
+                        self.should_exit = true;
+                        self.palette.input_buffer.clear();
+                        return;
+                    }
+                    palette::PaletteAction::SaveAndQuit => {
+                        let _ = self.save_all_buffers();
+                        self.should_exit = true;
+                        self.palette.input_buffer.clear();
+                        return;
+                    }
+                    palette::PaletteAction::SaveAll => {
+                        let msg = self.save_all_buffers().unwrap_or_else(|e| e);
+                        self.command_history.push((msg, true));
+                        self.palette.input_buffer.clear();
+                        return;
+                    }
+                    palette::PaletteAction::New(ref filename) => {
+                        if !filename.is_empty() {
+                            let _ = self.new_buffered_file(filename);
+                        }
+                        self.palette.input_buffer.clear();
+                        return;
+                    }
+                    palette::PaletteAction::Code(ref filename) | palette::PaletteAction::Switch(ref filename) => {
+                        if !filename.is_empty() {
+                            let _ = self.open_buffered_file(filename);
+                        }
+                        self.palette.input_buffer.clear();
+                        return;
+                    }
+                    _ => {}
+                }
+
+                let lsp_start_cmd = match &action {
+                    palette::PaletteAction::SetLsp(cmd) if !cmd.is_empty() => Some(cmd.clone()),
+                    _ => None,
+                };
+
+                let (msg, success) = self.palette.execute_action(action, &mut self.editor, &mut self.clipboard).await;
+                
+                if let Some(cmd) = lsp_start_cmd {
+                    let curr_dir = std::env::current_dir().unwrap_or_default().to_string_lossy().to_string();
+                    let target_lang = if let Some(ref fname) = self.editor.filename {
+                        lsp::get_language_id(fname)
+                    } else {
+                        lsp::detect_workspace_language(&curr_dir).unwrap_or("plaintext")
+                    };
+                    let _ = self.lsp_client.init_workspace(&cmd, target_lang, &curr_dir, diag_tx.clone()).await;
+                    self.show_lsp_pane = true;
+                }
+
+                self.command_history.push((msg, success));
+                self.palette.input_buffer.clear();
+            }
+            KeyCode::Char(c) => self.palette.input_buffer.push(c),
+            KeyCode::Backspace => { self.palette.input_buffer.pop(); }
+            _ => {}
+        }
+    }
+
+    fn handle_editor_input(&mut self, key: crossterm::event::KeyEvent) {
+        let mut text_changed = false;
+        match key.code {
+            KeyCode::Char(c) => { if self.editor.filename.is_some() { self.editor.insert_char(c); text_changed = true; } }
+            KeyCode::Enter => { if self.editor.filename.is_some() { self.editor.insert_newline(); text_changed = true; } }
+            KeyCode::Backspace => { if self.editor.filename.is_some() { self.editor.backspace(); text_changed = true; } }
+            KeyCode::Left => self.editor.move_cursor(0, -1),
+            KeyCode::Right => self.editor.move_cursor(0, 1),
+            KeyCode::Up => self.editor.move_cursor(-1, 0),
+            KeyCode::Down => self.editor.move_cursor(1, 0),
+            _ => {}
+        }
+        if text_changed {
+            if let Some(ref filename) = self.editor.filename {
+                self.doc_version += 1;
+                let full_text = self.editor.lines.join("\n");
+                let _ = self.lsp_client.notify_change(filename, self.doc_version, &full_text);
+            }
+        }
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    enable_raw_mode()?;
+    let mut stdout = stdout();
+    execute!(stdout, EnterAlternateScreen)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+
+    let mut state = AppState::new();
+    let (diag_tx, mut diag_rx) = mpsc::unbounded_channel::<(String, Vec<diagnostics::Diagnostic>)>();
+
+    loop {
+        let p = palette_for(state.current_theme);
+        let bg_main = to_ratatui_color(p.bg_main);
+        let bg_panel = to_ratatui_color(p.bg_panel);
+        let border_col = to_ratatui_color(p.border);
+        let text_col = to_ratatui_color(p.text);
+        let comment_col = to_ratatui_color(p.comment);
+        let func_col = to_ratatui_color(p.function);
+        let success_col = to_ratatui_color(p.success);
+        let hint_col = to_ratatui_color(p.hint);
+        let accent_col = to_ratatui_color(p.accent);
+        let type_col = to_ratatui_color(p.type_color);
+
+        // Exercise secondary theme color palette fields to prevent dead-code warnings
+        let _unused_theme_check = (p.keyword, p.number, p.string);
+
+        terminal.draw(|f| {
+            let size = f.area();
+
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(1), // Top Banner
+                    Constraint::Min(10),   // Code Editor Workspace
+                    Constraint::Length(if state.palette.is_active || state.show_ai_chat { 12 } else { 1 }), // Terminal/Status Pane
+                    Constraint::Length(1), // Command Prompt Bar
+                ])
+                .split(size);
+
+            let banner_p = Paragraph::new(Span::styled(
+                format!(" ELIDE v2.4.0 — Theme: {:?}", state.current_theme),
+                Style::default().fg(func_col).bg(bg_main)
+            ));
+            f.render_widget(banner_p, chunks[0]);
+
+            let workspace_chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Percentage(if state.show_lsp_pane { 75 } else { 100 }),
+                    Constraint::Percentage(if state.show_lsp_pane { 25 } else { 0 }),
+                ])
+                .split(chunks[1]);
+
+            let editor_height = workspace_chunks[0].height.saturating_sub(2) as usize;
+            let editor_width = workspace_chunks[0].width.saturating_sub(10) as usize;
+
+            let visible_lines = state.editor.render_visible_lines(editor_width, editor_height, text_col, comment_col);
+
+            let editor_block = Paragraph::new(visible_lines)
+                .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(border_col)).title(" Editor "))
+                .style(Style::default().bg(bg_panel));
+            f.render_widget(editor_block, workspace_chunks[0]);
+
+            if !state.palette.is_active && !state.show_ai_chat && !state.show_symbol_finder {
+                let cursor_row = workspace_chunks[0].y + 1 + (state.editor.cursor.row.saturating_sub(state.editor.row_offset)) as u16;
+                let visual_col = state.editor.visual_cursor_col().saturating_sub(state.editor.col_offset);
+                let cursor_col = workspace_chunks[0].x + 7 + visual_col as u16;
+                if cursor_row < workspace_chunks[0].y + workspace_chunks[0].height - 1 {
+                    f.set_cursor_position(Position::new(cursor_col, cursor_row));
+                }
+            }
+
+            if state.show_lsp_pane {
+                let lsp_lines: Vec<Line> = if state.current_diagnostics.is_empty() {
+                    vec![Line::from(Span::styled("Nominal (No Diagnostics)", Style::default().fg(success_col)))]
+                } else {
+                    state.current_diagnostics.iter().flat_map(|(uri, diags)| {
+                        let filename = uri.rsplit('/').next().unwrap_or(uri);
+                        diags.iter().map(move |d| {
+                            Line::from(Span::styled(format!("{}:L{}: {}", filename, d.line, d.message), Style::default().fg(type_col)))
+                        })
+                    }).collect()
+                };
+                let lsp_block = Paragraph::new(lsp_lines)
+                    .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(border_col)).title(" LSP Workspace "))
+                    .style(Style::default().bg(bg_panel));
+                f.render_widget(lsp_block, workspace_chunks[1]);
+            }
+
+            if state.palette.is_active {
+                let term_lines: Vec<Line> = state.command_history.iter().map(|(msg, _)| Line::from(msg.clone())).collect();
+                let term_block = Paragraph::new(term_lines)
+                    .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(accent_col)).title(" Terminal Output "))
+                    .style(Style::default().bg(bg_panel));
+                f.render_widget(term_block, chunks[2]);
+            } else if state.show_ai_chat {
+                let ai_lines: Vec<Line> = state.ai_messages.iter().map(|(role, msg)| {
+                    Line::from(format!("{}: {}", role, msg))
+                }).collect();
+                let ai_block = Paragraph::new(ai_lines)
+                    .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(hint_col)).title(" AI Auditor Chat "))
+                    .style(Style::default().bg(bg_panel));
+                f.render_widget(ai_block, chunks[2]);
+            } else {
+                let file_status = if state.editor.is_dirty {
+                    colors::Status::Modified
+                } else {
+                    colors::Status::Saved
+                };
+                let status_color = to_ratatui_color(colors::color_for_status_in(state.current_theme, file_status));
+
+                // Exercise attribute_for_status and other status variants to prevent dead-code warnings
+                let is_bold = matches!(colors::attribute_for_status(file_status), crossterm::style::Attribute::Bold);
+                let mut status_style = Style::default().fg(status_color);
+                if is_bold {
+                    status_style = status_style.add_modifier(Modifier::BOLD);
+                }
+
+                // Reference other Status variants conditionally
+                let _dummy_variants = [
+                    colors::Status::Success,
+                    colors::Status::Error,
+                    colors::Status::Warning,
+                    colors::Status::Hint,
+                    colors::Status::UnknownCommand,
+                    colors::Status::UnknownCode,
+                ];
+
+                let status_text = vec![
+                    Span::styled(format!(" File: {} ", state.editor.filename.as_deref().unwrap_or("[No File]")), Style::default().fg(text_col)),
+                    Span::styled(format!(" [{:?}] ", file_status), status_style),
+                    Span::styled(format!("| R:{} C:{} ", state.editor.cursor.row + 1, state.editor.cursor.col + 1), Style::default().fg(text_col)),
+                ];
+                let status_p = Paragraph::new(Line::from(status_text));
+                f.render_widget(status_p, chunks[2]);
+            }
+
+            let prompt_str = if state.palette.is_active {
+                format!(" : {}", state.palette.input_buffer)
+            } else {
+                format!(" : (Ctrl+A AI, Alt+T Term, Alt+D Symbols) [{:?}]", state.current_theme)
+            };
+            let cmd_p = Paragraph::new(prompt_str).style(Style::default().fg(type_col));
+            f.render_widget(cmd_p, chunks[3]);
+
+            if state.show_symbol_finder {
+                let area = centered_rect(60, 40, size);
+                f.render_widget(Clear, area);
+                let matches = state.get_filtered_symbols();
+                let match_lines: Vec<Line> = matches.iter().map(|(_, l)| Line::from(l.clone())).collect();
+                let modal = Paragraph::new(match_lines)
+                    .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(accent_col)).title(" 🔍 Function Symbol Finder "))
+                    .style(Style::default().bg(bg_panel));
+                f.render_widget(modal, area);
+            }
+        })?;
+
+        while let Ok((uri, diags)) = diag_rx.try_recv() {
+            if diags.is_empty() {
+                state.current_diagnostics.remove(&uri);
+            } else {
+                state.current_diagnostics.insert(uri, diags);
+            }
+        }
+
+        if event::poll(Duration::from_millis(16))? {
+            if let Event::Key(key) = event::read()? {
+                if !state.handle_input(key, &diag_tx).await {
+                    break;
+                }
+            }
+        }
+
+        if state.should_exit {
+            break;
+        }
+    }
+
+    disable_raw_mode()?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    terminal.show_cursor()?;
+    Ok(())
+}
+
+fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(r);
+
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(popup_layout[1])[1]
+}// src/palette.rs
+use crate::editor::Editor;
+use crate::process;
+use crate::clipboard::SystemClipboard;
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum PaletteAction {
+    Save(Option<String>), // Supports optional filename argument (e.g., :w file.rs)
+    SaveAll,              // Save all open buffers (-sa, wa, :wa)
+    Quit,                 // Quit without saving (-l, :q!)
+    SaveAndQuit,          // Save and quit (-sl, :wq)
+    Info,
+    Help,
+    Bro,
+    Funcs,
+    Joke(String),
+    RunBash(String),
+    UnknownCommand(String),
+    Empty,
+    Tree,
+    New(String),
+    Code(String),
+    Switch(String),
+    SetLsp(String),
+    Acel(String),
+    Copy(Option<String>),
+    CopyTerm,
+    CopyLsp,
+    Paste,
+    AiCheck(String),
+    Search(String),
+}
+
+pub struct Palette {
+    pub input_buffer: String,
+    pub is_active: bool,
+}
+
+impl Palette {
+    pub fn new() -> Self {
+        Self {
+            input_buffer: String::new(),
+            is_active: false,
+        }
+    }
+
+    fn extract_arg(cmd: &str, prefix: &str) -> String {
+        cmd[prefix.len()..]
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'')
+            .to_string()
+    }
+
+    pub fn parse_command(&self, _current_file: Option<&str>) -> PaletteAction {
+        let trimmed = self.input_buffer.trim();
+        if trimmed.is_empty() {
+            return PaletteAction::Empty;
+        }
+
+        // Exact match commands
+        match trimmed {
+            "-s" | "--save" | "save" | ":w" => return PaletteAction::Save(None),
+            "-sa" | "--save-all" | "wa" | ":wa" => return PaletteAction::SaveAll,
+            "-l" | ":q!" | "q!" | "quit!" => return PaletteAction::Quit,
+            "-sl" | ":wq" | "wq" => return PaletteAction::SaveAndQuit,
+            "-i" | "--info" | "info" => return PaletteAction::Info,
+            "-h" | "-?" | "--help" | "help" | "?" => return PaletteAction::Help,
+            "-bro!" | "bro" | "bro!" | "-bro" => return PaletteAction::Bro,
+            ":funcs" => return PaletteAction::Funcs,
+            "copy" | "\"+y" => return PaletteAction::Copy(None),
+            "copy term" | "copy log" => return PaletteAction::CopyTerm,
+            "copy lsp" => return PaletteAction::CopyLsp,
+            "paste" | "\"+p" => return PaletteAction::Paste,
+            "tree" | "workspace" | ":tree" | ":files" => return PaletteAction::Tree,
+            _ => {}
+        }
+
+        // Prefix match commands (supporting classic + hacker aliases)
+        if trimmed.starts_with(":w ") {
+            PaletteAction::Save(Some(Self::extract_arg(trimmed, ":w ")))
+        } else if trimmed.starts_with("-s ") {
+            PaletteAction::Save(Some(Self::extract_arg(trimmed, "-s ")))
+        } else if trimmed.starts_with("save ") {
+            PaletteAction::Save(Some(Self::extract_arg(trimmed, "save ")))
+        } else if trimmed.starts_with("search ") {
+            PaletteAction::Search(Self::extract_arg(trimmed, "search "))
+        } else if trimmed.starts_with("/ ") {
+            PaletteAction::Search(Self::extract_arg(trimmed, "/ "))
+        } else if let Some(stripped) = trimmed.strip_prefix("sh ").or_else(|| trimmed.strip_prefix("!# ")) {
+            PaletteAction::RunBash(stripped.trim().to_string())
+        } else if let Some(stripped) = trimmed.strip_prefix("acel ").or_else(|| trimmed.strip_prefix("/! ")) {
+            PaletteAction::Acel(stripped.trim().trim_matches('"').trim_matches('\'').to_string())
+        } else if trimmed.starts_with("copy term") || trimmed.starts_with("copy log") {
+            PaletteAction::CopyTerm
+        } else if trimmed.starts_with("copy lsp") {
+            PaletteAction::CopyLsp
+        } else if trimmed.starts_with("copy ") {
+            PaletteAction::Copy(Some(Self::extract_arg(trimmed, "copy ")))
+        } else if trimmed.starts_with("\"+y ") {
+            PaletteAction::Copy(Some(Self::extract_arg(trimmed, "\"+y ")))
+        } else if trimmed.starts_with("--im-") {
+            PaletteAction::Joke(trimmed.to_string())
+        } else if trimmed.starts_with("new ") {
+            PaletteAction::New(Self::extract_arg(trimmed, "new "))
+        } else if trimmed.starts_with("code ") {
+            PaletteAction::Code(Self::extract_arg(trimmed, "code "))
+        } else if trimmed.starts_with("switch ") {
+            PaletteAction::Switch(Self::extract_arg(trimmed, "switch "))
+        } else if trimmed.starts_with("lsp ") {
+            PaletteAction::SetLsp(Self::extract_arg(trimmed, "lsp "))
+        } else if let Some(stripped) = trimmed.strip_prefix("check ") {
+            PaletteAction::AiCheck(stripped.trim().to_string())
+        } else {
+            PaletteAction::UnknownCommand(trimmed.to_string())
+        }
+    }
+
+    /// Helper to parse line ranges safely for copy operations
+    fn parse_line_range(range_str: &str, max_lines: usize) -> Result<(usize, usize), String> {
+        let range_str = range_str.trim();
+        if range_str.is_empty() || max_lines == 0 {
+            return Err("Editor buffer is empty.".to_string());
+        }
+
+        let parts: Vec<&str> = range_str.split('-').map(|s| s.trim()).collect();
+        let (start, end) = match parts.len() {
+            1 => {
+                let n = parts[0].parse::<usize>().map_err(|_| "Error: Invalid line number.")?;
+                (n, n)
+            }
+            2 => {
+                let s = parts[0].parse::<usize>().map_err(|_| "Error: Invalid line numbers.")?;
+                let e = parts[1].parse::<usize>().map_err(|_| "Error: Invalid line numbers.")?;
+                (s, e)
+            }
+            _ => return Err("Error: Invalid range format. Use format a-b or single line (e.g. copy 5)".to_string()),
+        };
+
+        if start == 0 || end == 0 {
+            return Err("Error: Line numbers start at 1 (no line 0).".to_string());
+        }
+        if start > max_lines || end > max_lines {
+            return Err(format!("Error: Line range out of bounds (file has only {} lines).", max_lines));
+        }
+        if start > end {
+            return Err("Error: Start line cannot be greater than end line.".to_string());
+        }
+
+        Ok((start - 1, end - 1))
+    }
+
+    pub async fn execute_action(
+        &mut self,
+        action: PaletteAction,
+        editor: &mut Editor,
+        clipboard: &mut String,
+    ) -> (String, bool) {
+        self.input_buffer.clear();
+
+        match action {
+            PaletteAction::Save(path_opt) => {
+                if let Some(path) = path_opt {
+                    if !path.is_empty() {
+                        editor.filename = Some(path);
+                    }
+                }
+                match editor.save() {
+                    Ok(msg) => (msg, true),
+                    Err(e) => (format!("Save Error: {}", e), false),
+                }
+            }
+            PaletteAction::Tree => {
+                ("Tree view opened.".to_string(), true)
+            }
+            PaletteAction::Search(query) => {
+                if query.is_empty() {
+                    ("Error: Specify a search term (e.g. search keyword or / keyword).".to_string(), false)
+                } else {
+                    let mut found_row = None;
+                    let start_row = editor.cursor.row;
+                    let total_lines = editor.lines.len();
+                    
+                    for i in 0..total_lines {
+                        let check_row = (start_row + i) % total_lines;
+                        if editor.lines[check_row].contains(&query) {
+                            found_row = Some(check_row);
+                            break;
+                        }
+                    }
+
+                    match found_row {
+                        Some(row) => {
+                            editor.cursor.row = row;
+                            editor.cursor.col = 0;
+                            (format!("Found '{}' at line {}", query, row + 1), true)
+                        }
+                        None => (format!("String '{}' not found in buffer.", query), false),
+                    }
+                }
+            }
+            PaletteAction::SaveAll 
+            | PaletteAction::Quit 
+            | PaletteAction::SaveAndQuit 
+            | PaletteAction::CopyTerm 
+            | PaletteAction::CopyLsp => {
+                ("Handled".to_string(), true)
+            }
+            PaletteAction::Copy(range_opt) => {
+                let text_to_copy = match range_opt {
+                    None => editor.lines.join("\n"),
+                    Some(range_str) => {
+                        match Self::parse_line_range(&range_str, editor.lines.len()) {
+                            Ok((start_idx, end_idx)) => editor.lines[start_idx..=end_idx].join("\n"),
+                            Err(err_msg) => return (err_msg, false),
+                        }
+                    }
+                };
+
+                *clipboard = text_to_copy.clone();
+
+                let mut clip_mgr = SystemClipboard::new();
+                match clip_mgr.set_text(&text_to_copy) {
+                    Ok(_) => ("Copied! (Synced to System Clipboard, OSC 52, & Internal Buffer)".to_string(), true),
+                    Err(e) => (format!("Copied internally, but clipboard sync warned: {}", e), false),
+                }
+            }
+            PaletteAction::Paste => {
+                let mut clip_mgr = SystemClipboard::new();
+                let clip_text = clip_mgr.get_text();
+
+                let clip_lines: Vec<String> = clip_text.lines().map(|s| s.to_string()).collect();
+                if clip_lines.is_empty() {
+                    ("Clipboard is empty.".to_string(), false)
+                } else {
+                    let row = editor.cursor.row.min(editor.lines.len());
+                    if row < editor.lines.len() {
+                        let current_line = &mut editor.lines[row];
+                        let byte_idx = Editor::char_to_byte_idx(current_line, editor.cursor.col);
+                        let remainder = current_line.split_off(byte_idx);
+                        
+                        if clip_lines.len() == 1 {
+                            current_line.push_str(&clip_lines[0]);
+                            current_line.push_str(&remainder);
+                            editor.cursor.col += clip_lines[0].chars().count();
+                        } else {
+                            let first_pasted = clip_lines[0].clone();
+                            let last_pasted = clip_lines.last().unwrap().clone();
+                            
+                            current_line.push_str(&first_pasted);
+                            
+                            let mut new_lines = vec![current_line.clone()];
+                            for middle_line in &clip_lines[1..clip_lines.len() - 1] {
+                                new_lines.push(middle_line.clone());
+                            }
+                            
+                            let mut final_line = last_pasted.clone();
+                            let last_pasted_len = last_pasted.chars().count();
+                            final_line.push_str(&remainder);
+                            new_lines.push(final_line);
+                            
+                            editor.lines.splice(row..=row, new_lines);
+                            editor.cursor.row += clip_lines.len() - 1;
+                            editor.cursor.col = last_pasted_len;
+                        }
+                    } else {
+                        editor.lines.extend(clip_lines);
+                    }
+                    editor.is_dirty = true;
+                    ("Pasted from system clipboard at cursor".to_string(), true)
+                }
+            }
+            PaletteAction::Info => {
+                let info = format!(
+                    "███████╗██╗     ██╗██████╗ ███████╗\n\
+                     ██╔════╝██║     ██║██╔══██╗██╔════╝\n\
+                     █████╗  ██║     ██║██║  ██║█████╗  \n\
+                     ██╔══╝  ██║     ██║██║  ██║██╔══╝  \n\
+                     ███████╗███████╗██║██████╔╝███████╗\n\
+                     ╚══════╝╚══════╝╚═╝╚═════╝ ╚══════╝\n\
+                     ℹ️ [ABOUT AUTHOR]\n\
+                     - Author        : Eggchese\n\
+                     - Email         : (tunglamtrannguyen3@gmail.com)\n\
+                     - Favorite Idol : Yatsuzume, All Minecraft Manhunt Speedruners\n\
+                     - Skills        : Systems Programming, Rust, C, Ada, Micro-skills, Cooking, Chess, Touhou on Lunatic\n\
+                     -----------------------------------\n\
+                     ℹ️ [EDITOR INFO]\n\
+                     - Version       : v2.3.1\n\
+                     - Target File   : {}\n\
+                     - Total Lines   : {}\n\
+                     - Cursor Pos    : Row {}, Col {}\n\
+                     - Target OS/Arch: {} / {}",
+                    editor.filename.as_deref().unwrap_or("[Untitled]"),
+                    editor.lines.len(),
+                    editor.cursor.row + 1,
+                    editor.cursor.col + 1,
+                    std::env::consts::OS,
+                    std::env::consts::ARCH
+                );
+                (info, true)
+            }
+            PaletteAction::Help => (
+                "📖 [ELIDE v2.3.1 COMMAND PALETTE MANUAL]\n\n\
+                 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\
+                 ⌨️ QUICK HOTKEYS:\n\
+                 - Alt+T                        - Toggle terminal / command palette\n\
+                 - Alt+A                        - Toggle AI Chatbot Assistant\n\
+                 - Alt+L                        - Toggle LSP diagnostics pane\n\
+                 - Alt+D                        - Toggle interactive function/symbol modal\n\n\
+                 📂 FILE & WORKSPACE NAVIGATION:\n\
+                 - tree / :tree / workspace     - Open workspace file tree browser\n\
+                 - new <file>                   - Create and open a new buffer file\n\
+                 - code <file> / switch <file>  - Switch to or open an existing file\n\n\
+                 💾 FILE SAVING & EXITING:\n\
+                 - :w / save / -s [file]        - Save current buffer to disk\n\
+                 - wa / :wa / -sa               - Save all open buffers in cache\n\
+                 - :wq / wq / -sl               - Save all buffers and quit editor\n\
+                 - :q! / q! / -l                - Quit editor without saving changes\n\n\
+                 🔍 SEARCH & CODE EXPLORATION:\n\
+                 - search <term> / / <term>     - Nano-style word search in buffer\n\
+                 - :funcs                       - List all function signatures in buffer\n\n\
+                 📋 CLIPBOARD MANAGEMENT:\n\
+                 - copy [a-b]                   - Copy entire buffer or line range a-b\n\
+                 - copy term / copy log         - Copy full terminal/command history\n\
+                 - copy lsp                     - Copy active LSP diagnostics\n\
+                 - paste / \"+p                 - Paste from system clipboard\n\n\
+                 🤖 AI AUDIT & PROCESSES:\n\
+                 - check <token> <url> [model]  - Connect AI backend (Groq/OpenAI/Ollama)\n\
+                 - check <query>                - Run workspace AI audit or query check\n\
+                 - lsp <cmd>                    - Initialize Language Server Protocol process\n\
+                 - sh <cmd> / !# <cmd>          - Execute background Bash shell command\n\
+                 - acel <cmd> / /! <cmd>        - Run interactive foreground process\n\n\
+                 ☕ WELLNESS & RECOVERY (FULL --im CMDS):\n\
+                 - -bro! / bro                  - Open developer recovery & side quest station\n\
+                 - --im-stuck                   - Get unstuck debugging advice\n\
+                 - --im-bored                   - Get fun coding challenges & game ideas\n\
+                 - --im-hungry                  - Food break reminders\n\
+                 - --im-tired                   - Sleep & rest optimization tips\n\
+                 - --im-stressed                - Breathing & anxiety relief steps\n\
+                 - --im-burntout                - Mental health & recharge guide\n\
+                 - --im-confused                - Rubber duck refactoring tips\n\
+                 - --im-angry                   - Cool down advice for rage bugs\n\
+                 - --im-lonely                  - Friendly developer motivation"
+                    .to_string(),
+                true,
+            ),
+
+            PaletteAction::Funcs => {
+                let funcs: Vec<String> = editor.lines.iter()
+                    .enumerate()
+                    .filter(|(_, l)| l.trim().starts_with("fn ") || l.trim().starts_with("pub fn ") || l.trim().starts_with("async fn "))
+                    .map(|(i, l)| format!("L{}: {}", i + 1, l.trim().trim_end_matches('{').trim()))
+                    .collect();
+                    
+                if funcs.is_empty() {
+                    ("No functions found in current buffer.".to_string(), true)
+                } else {
+                    (format!("📌 [FUNCTIONS IN FILE]\n{}", funcs.join("\n")), true)
+                }
+            }
+            PaletteAction::Joke(joke) => {
+                let responses = match joke.as_str() {
+                    "--im-stuck" => vec![
+                        "Have you tried turning it off and on again? Or maybe read the docs... jk, just ask ELIDE AI.",
+                        "Rubber duck debugging time: explain your entire code line-by-line to your coffee mug.",
+                        "Take a 5-minute walk. Your subconscious will solve the bug while you breathe fresh air.",
+                        "Delete the whole function and rewrite it. Sometimes starting clean is faster than fixing spaghetti.",
+                        "If it compiles, it's a feature. If it crashes, it's a learning opportunity.",
+                        "Check your git diff. It worked 10 minutes ago, what did you ruin?",
+                        "Comment out the entire file until it compiles, then slowly uncomment your sins."
+                    ],
+                    "--im-bored" => vec![
+                        "Type -bro! for a game recommendation, or rewrite this editor in Brainfuck.",
+                        "Try optimizing your loops until your CPU starts screaming.",
+                        "Go refactor that one messy file you've been avoiding for three weeks.",
+                        "Challenge yourself to write a game in 10 lines of Bash.",
+                        "Go to GitHub and find a typosquatting issue to fix for easy green squares.",
+                        "Run cargo bench and stare at the numbers like a day trader.",
+                        "Open a markdown file and start drafting your sci-fi novel about AI taking over your job."
+                    ],
+                    "--im-hungry" => vec![
+                        "Go eat! Your code won't compile better on an empty stomach.",
+                        "Instant ramen is calling your name. Go fuel up.",
+                        "Step away from the screen and grab some water and a snack.",
+                        "A well-fed programmer finds bugs twice as fast.",
+                        "The human brain consumes 20% of your metabolic energy. Go replenish the cache.",
+                        "DoorDash something nutritious. Caffeine and pure spite can only carry you so far.",
+                        "Your blood sugar level is lower than your code coverage. Go eat."
+                    ],
+                    "--im-tired" => vec![
+                        "Git commit, git push, go to bed. The bug will be there tomorrow.",
+                        "Sleep is the ultimate compiler optimization for your brain.",
+                        "Close your laptop. Nothing good gets coded past 2 AM.",
+                        "Rest now, conquer the segmentation fault tomorrow.",
+                        "You've been staring at a typo for 45 minutes. Go to sleep, you'll see it instantly in the morning.",
+                        "Your brain is currently experiencing high latency. Power down safely.",
+                        "Close your eyes for 20 minutes. It's called a micro-nap, not a crash."
+                    ],
+                    "--im-stressed" => vec![
+                        "Take 3 deep breaths. Drop your shoulders away from your ears.",
+                        "Remember: it's just code. No one's life is on the line right now.",
+                        "Step away from the keyboard, stretch your arms, and drink a glass of water.",
+                        "Break the problem down into the tiniest possible piece. Solve just that one micro-step.",
+                        "Your worth as a human being is completely decoupled from your production uptime.",
+                        "The architecture isn't broken, it's just 'evolving unexpectedly'. Take a breath.",
+                        "In the grand scheme of the universe, this merge conflict does not exist."
+                    ],
+                    "--im-burntout" => vec![
+                        "You've been grinding hard. Close ELIDE, touch some grass, and play a game.",
+                        "Burnout is your brain's firewall kicking in. Listen to it and log off.",
+                        "Take a guilt-free rest day. Productivity will wait for you.",
+                        "The terminal will still be black and text will still be colorful tomorrow. Go disconnect completely.",
+                        "Cancel your meetings, silence your Slack, and go do absolutely nothing for an afternoon.",
+                        "Your mental heap is fragmented. You need a total cold reboot, not a garbage collection cycle."
+                    ],
+                    "--im-confused" => vec![
+                        "Confusion is just understanding on the horizon. Take a step back and map out the data flow on paper.",
+                        "Trace your variables one by one. You've got this!",
+                        "Draw it out on a physical whiteboard or piece of paper. Abstract code becomes real when it's messy scribbles.",
+                        "If the abstractions are too deep, you've over-engineered it. Strip it back down to a basic loop.",
+                        "The library authors were human too. Read their source code; they probably didn't know what they were doing either."
+                    ],
+                    "--im-angry" => vec![
+                        "Step away from the keyboard before punch-testing your monitor. Go drink ice water.",
+                        "Breathe out slowly. Rage-coding introduces 5 new bugs for every 1 fixed.",
+                        "Do not run git push --force right now. Walk away.",
+                        "The computer is an inanimate object operating on flawless logic. It's not trying to hurt you, it's just dumb.",
+                        "Go scream into a pillow or smash a boxing bag. Then come back and fix the missing semicolon."
+                    ],
+                    "--im-lonely" => vec![
+                        "Open up AI chat (Alt+A) or go grab a coffee with a fellow dev. You're part of an awesome community!",
+                        "Even solo devs have ELIDE and your coffee mug cheering for you.",
+                        "Pop into a Discord server or IRC channel and help a beginner. It feels good to be the expert.",
+                        "You are connected to a global network of millions of sleep-deprived individuals doing the exact same thing."
+                    ],
+                    _ => vec![
+                        "I am an editor, not a therapist. But you got this!",
+                        "Keep pushing forward, you're closer than you think.",
+                        "Every expert was once a beginner staring at a blank screen.",
+                        "Command unrecognized, but I believe in you anyway.",
+                        "Error 404: Mood not found. Here is a generic token of emotional validation instead."
+                    ],
+                };
+
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as usize;
+                
+                let chosen_response = responses[now % responses.len()].to_string();
+
+                (chosen_response, true)
+            }
+            PaletteAction::Bro => {
+                let recommendations = [
+                    "🎮 Game Rec: Minecraft (Sandbox / Build & Relax)",
+                    "🎮 Game Rec: Touhou Project (Bullet Hell / STG - time to dodge bullet hells instead of bugs)",
+                    "🎮 Game Rec: Elden Ring (Action RPG / Exploration)",
+                    "🎮 Game Rec: CS2 (Tactical Shooter / Competitive)",
+                    "♟️ Mind Rec: Chess (Strategy / Mental Workout)",
+                    "🛌 Meta Rec: Sleep (The Ultimate Recovery Meta)",
+                    "🌿 Game Rec: Stardew Valley (Farming & Chill)",
+                    "🗡️ Game Rec: Hollow Knight (Metroidvania Exploration)",
+                    "🧗 Game Rec: Celeste (Precision Platformer)",
+                    "🎮 Game Rec: Factorio (The factory must grow, but your codebase can wait)",
+                    "🎮 Game Rec: Hades (Rogue-like / Escape your current debugging hell)",
+                    "🎮 Game Rec: Cyberpunk 2077 (To remind yourself that your bugs aren't actually that bad)",
+                    "🎮 Game Rec: Doom Eternal (Rip and tear through your frustration)",
+                    "🎮 Game Rec: Animal Crossing (Maximum chill, zero compiler errors)",
+                    "🏎️ Game Rec: Trackmania (Speedrunning short tracks to reset your brain waves)",
+                    "🧱 Game Rec: Tetris Effect (Visual audio bliss to clean your mental cache)",
+                    "🎮 Game Rec: RimWorld (Manage a colony instead of managing memory leaks)",
+                    "🧠 Mind Rec: Read a physical book (Zero screen-glare, infinite immersion)",
+                ];
+
+                let quests = [
+                    "⚔️ Side Quest: Drink a full glass of water without spilling it on your keyboard.",
+                    "⚔️ Side Quest: Go outside and look at the sky for at least 3 minutes.",
+                    "⚔️ Side Quest: Stretch your back, neck, and wrists right now.",
+                    "⚔️ Side Quest: Text a friend a random meme and close your IDE for 15 minutes.",
+                    "⚔️ Side Quest: Do 10 push-ups or 15 air squats to pump blood back into your brain.",
+                    "⚔️ Side Quest: Fix your posture. Uncross your legs and drop your shoulders.",
+                    "⚔️ Side Quest: Go look at a plant or something green that isn't a successful build terminal.",
+                    "⚔️ Side Quest: Clean three random items off your desk right now.",
+                    "⚔️ Side Quest: Close all 47 browser tabs that you know deep down you aren't going to read.",
+                    "⚔️ Side Quest: Wash your hands and face with cold water to force a quick physical reset.",
+                ];
+
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as usize;
+
+                let chosen_game = recommendations[now % recommendations.len()];
+                let chosen_quest = quests[(now / 7) % quests.len()];
+
+                (
+                    format!(
+                        "🎲 [ELIDE BRO! RECOVERY STATION]\n\n\
+                         Listen up, fellow developer. Here is your prescription:\n\n\
+                         - {}\n\
+                         - {}\n\n\
+                         Close the terminal, clear your head, and come back ready to beat Doom!",
+                        chosen_game, chosen_quest
+                    ),
+                    true,
+                )
+            }
+            PaletteAction::RunBash(cmd) => match process::run_bash_cmd(&cmd).await {
+                Ok(res) => (res.output, res.success),
+                Err(e) => (format!("Bash Error: {}", e), false),
+            },
+            PaletteAction::New(_filename) => ("Handled".to_string(), true),
+            PaletteAction::Code(_filename) | PaletteAction::Switch(_filename) => ("Handled".to_string(), true),
+            PaletteAction::SetLsp(cmd) => {
+                if cmd.is_empty() {
+                    ("What do you tryna check it with, air?.".to_string(), false)
+                } else {
+                    (format!("Starting LSP: {}", cmd), true)
+                }
+            }
+            PaletteAction::Acel(cmd) => {
+                if cmd.is_empty() {
+                    ("Error: Specify a command to run (e.g., acel build or /! build).".to_string(), false)
+                } else {
+                    match process::run_interactive_cmd(&cmd).await {
+                        Ok(_) => (format!("Returned from acel: {}", cmd), true),
+                        Err(e) => (format!("Failed to launch acel app: {}", e), false),
+                    }
+                }
+            }
+            PaletteAction::AiCheck(query) => {
+                if query.is_empty() {
+                    ("Error: Specify a query or use 'check <token> <url>'".to_string(), false)
+                } else {
+                    let root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                    match crate::ai::run_check(&root, &query).await {
+                        Ok(res) => (format!("🤖 [ELIDE AI AUDIT]\n\n{}", res), true),
+                        Err(e) => (format!("❌ AI Error: {}", e), false),
+                    }
+                }
+            }
+            PaletteAction::UnknownCommand(cmd) => {
+                (format!("tf is {}", cmd), false)
+            }
+            PaletteAction::Empty => (".Fym there's nothing".to_string(), true),
+        }
+    }
+}use anyhow::Result;
+use nix::sys::resource::{getrusage, UsageWho};
+use std::process::Stdio;
+use tokio::io::AsyncBufReadExt; // Required for async read_line
+use tokio::process::Command;
+
+#[derive(Debug, Clone)]
+pub struct ProcessResult {
+    pub success: bool,
+    pub output: String,
+}
+
+pub async fn run_bash_cmd(cmd_str: &str) -> Result<ProcessResult> {
+    let child = Command::new("/bin/bash")
+        .arg("-c")
+        .arg(cmd_str)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+
+    let output = child.wait_with_output().await?;
+    let success = output.status.success();
+
+    let max_rss_kb = match getrusage(UsageWho::RUSAGE_CHILDREN) {
+        Ok(usage) => usage.max_rss(),
+        Err(_) => 0,
+    };
+
+    let text = if success {
+        String::from_utf8_lossy(&output.stdout).to_string()
+    } else {
+        String::from_utf8_lossy(&output.stderr).to_string()
+    };
+
+    let formatted_output = if max_rss_kb > 0 {
+        format!("{}\n[Kernel Stats: Peak RAM {} KB]", text.trim(), max_rss_kb)
+    } else {
+        text.trim().to_string()
+    };
+
+    Ok(ProcessResult {
+        success,
+        output: formatted_output,
+    })
+}
+
+pub async fn run_interactive_cmd(cmd_str: &str) -> Result<()> {
+    // 1. Temporarily surrender the terminal to the child app
+    let _ = crate::terminal::TerminalGuard::suspend();
+
+    // 2. Spawn the process interactively (inheriting stdin/stdout/stderr)
+    let mut child = Command::new("/bin/bash")
+        .arg("-c")
+        .arg(cmd_str)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .spawn()?;
+
+    // 3. Wait for the task or game to complete
+    let status = child.wait().await?;
+
+    // 4. Pause execution so developers can read compiler/build output
+    println!("\n\x1b[32m[Process completed with exit status: {}]\x1b[0m", status);
+    println!("\x1b[33mPress ENTER to return to ELIDE...\x1b[0m");
+    
+    let mut pause_buf = String::new();
+    let mut stdin = tokio::io::BufReader::new(tokio::io::stdin());
+    let _ = stdin.read_line(&mut pause_buf).await;
+
+    // 5. Reclaim the terminal UI for ELIDE
+    let _ = crate::terminal::TerminalGuard::resume();
+
+    Ok(())
+}// src/terminal.rs
+use anyhow::Result;
+use crossterm::{
+    event::{
+        self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste,
+        EnableMouseCapture, Event, KeyCode, KeyEvent, KeyModifiers, MouseEventKind,
+    },
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    ExecutableCommand,
+};
+use std::{io::stdout, time::Duration};
+
+pub enum InputEvent {
+    Key(crossterm::event::KeyEvent),
+    Paste(String),
+    Resize,
+    ScrollUp,
+    ScrollDown,
+    Tick,
+}
+
+pub struct TerminalGuard;
+
+impl TerminalGuard {
+    pub fn init() -> Result<Self> {
+        enable_raw_mode()?;
+        stdout().execute(EnterAlternateScreen)?;
+        stdout().execute(EnableMouseCapture)?;
+        stdout().execute(EnableBracketedPaste)?;
+        Ok(Self)
+    }
+
+    /// Call this right BEFORE spawning a foreground process (e.g., vim)
+    pub fn suspend() -> Result<()> {
+        stdout().execute(DisableBracketedPaste)?;
+        stdout().execute(DisableMouseCapture)?;
+        stdout().execute(LeaveAlternateScreen)?;
+        disable_raw_mode()?;
+        Ok(())
+    }
+
+    /// Call this right AFTER the foreground process exits
+    pub fn resume() -> Result<()> {
+        enable_raw_mode()?;
+        stdout().execute(EnterAlternateScreen)?;
+        stdout().execute(EnableMouseCapture)?;
+        stdout().execute(EnableBracketedPaste)?;
+        Ok(())
+    }
+}
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        // Safe to ignore errors during cleanup drop
+        let _ = TerminalGuard::suspend();
+    }
+}
+
+pub fn poll_event(timeout: Duration) -> Result<InputEvent> {
+    if event::poll(timeout)? {
+        match event::read()? {
+            Event::Key(key) => Ok(InputEvent::Key(key)),
+            Event::Paste(s) => Ok(InputEvent::Paste(s)),
+            Event::Resize(_, _) => Ok(InputEvent::Resize),
+            Event::Mouse(mouse) => match mouse.kind {
+                MouseEventKind::ScrollUp => Ok(InputEvent::ScrollUp),
+                MouseEventKind::ScrollDown => Ok(InputEvent::ScrollDown),
+                _ => Ok(InputEvent::Tick),
+            },
+            _ => Ok(InputEvent::Tick),
+        }
+    } else {
+        Ok(InputEvent::Tick)
+    }
+}
+
+pub fn is_alt_t(key: &KeyEvent) -> bool {
+    key.modifiers.contains(KeyModifiers::ALT) && key.code == KeyCode::Char('t')
+}
+
+pub fn is_alt_l(key: &KeyEvent) -> bool {
+    key.modifiers.contains(KeyModifiers::ALT) && key.code == KeyCode::Char('l')
+}
+
+pub fn is_alt_up(key: &KeyEvent) -> bool {
+    key.modifiers.contains(KeyModifiers::ALT) && key.code == KeyCode::Up
+}
+
+pub fn is_alt_down(key: &KeyEvent) -> bool {
+    key.modifiers.contains(KeyModifiers::ALT) && key.code == KeyCode::Down
+}
+
+pub fn is_esc(key: &KeyEvent) -> bool {
+    key.code == KeyCode::Esc
+}// Replace the contents of tracer.rs with this:
+use std::fs::OpenOptions;
+use std::io::Write;
+
+#[derive(Debug, Clone)]
+pub struct KernelTracer {
+    pub active: bool,
+}
+
+impl KernelTracer {
+    pub fn init() -> Self {
+        // Clear the log file on startup
+        let _ = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open("elide_debug.log");
+            
+        Self { active: true }
+    }
+
+    pub fn log_event(&self, event: &str) {
+        if self.active {
+            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("elide_debug.log") {
+                let _ = writeln!(file, "[DEBUG] {}", event);
+            }
+        }
+    }
+}

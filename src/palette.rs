@@ -29,6 +29,12 @@ pub enum PaletteAction {
     Paste,
     AiCheck(String),
     Search(String),
+    // Git Integration Actions
+    GitStatus,
+    GitInitRepo,
+    GitChooseRepo,
+    GitLogin,
+    GitCommit { message: String, branch: String },
 }
 
 pub struct Palette {
@@ -74,6 +80,57 @@ impl Palette {
             "paste" | "\"+p" => return PaletteAction::Paste,
             "tree" | "workspace" | ":tree" | ":files" => return PaletteAction::Tree,
             _ => {}
+        }
+
+        // Beginner-friendly Git command parsing
+        if trimmed.starts_with("git ") {
+            let git_cmd = trimmed.strip_prefix("git ").unwrap().trim();
+            let tokens = parse_cli_tokens(git_cmd);
+            let subcommand = tokens.first().map(|s| s.as_str()).unwrap_or("");
+
+            return match subcommand {
+                "status" => PaletteAction::GitStatus,
+                "new" => {
+                    if tokens.get(1).map(|s| s.as_str()) == Some("repo") {
+                        PaletteAction::GitInitRepo
+                    } else {
+                        PaletteAction::UnknownCommand(trimmed.to_string())
+                    }
+                }
+                "choose" => {
+                    if tokens.get(1).map(|s| s.as_str()) == Some("repo") {
+                        PaletteAction::GitChooseRepo
+                    } else {
+                        PaletteAction::UnknownCommand(trimmed.to_string())
+                    }
+                }
+                "login" => PaletteAction::GitLogin,
+                "commit" => {
+                    let mut msg = String::new();
+                    let mut branch = String::new();
+                    let mut i = 1;
+                    while i < tokens.len() {
+                        match tokens[i].as_str() {
+                            "-tags" | "-m" | "--message" => {
+                                if let Some(val) = tokens.get(i + 1) {
+                                    msg = val.clone();
+                                    i += 1;
+                                }
+                            }
+                            "branch" | "-b" | "--branch" => {
+                                if let Some(val) = tokens.get(i + 1) {
+                                    branch = val.clone();
+                                    i += 1;
+                                }
+                            }
+                            _ => {}
+                        }
+                        i += 1;
+                    }
+                    PaletteAction::GitCommit { message: msg, branch }
+                }
+                _ => PaletteAction::UnknownCommand(trimmed.to_string()),
+            };
         }
 
         // Prefix match commands (supporting classic + hacker aliases)
@@ -279,17 +336,17 @@ impl Palette {
                      ███████╗███████╗██║██████╔╝███████╗\n\
                      ╚══════╝╚══════╝╚═╝╚═════╝ ╚══════╝\n\
                      ℹ️ [ABOUT AUTHOR]\n\
-                     - Author        : Eggchese\n\
-                     - Email         : (tunglamtrannguyen3@gmail.com)\n\
-                     - Favorite Idol : Yatsuzume, All Minecraft Manhunt Speedruners\n\
-                     - Skills        : Systems Programming, Rust, C, Ada, Micro-skills, Cooking, Chess, Touhou on Lunatic\n\
+- Author        : Eggchese\n\
+- Email         : (tunglamtrannguyen3@gmail.com)\n\
+- Favorite Idol : Yatsuzume, All Minecraft Manhunt Speedruners\n\
+- Skills        : Systems Programming, Rust, C, Ada, Micro-skills, Cooking, Chess, Touhou on Lunatic\n\
                      -----------------------------------\n\
                      ℹ️ [EDITOR INFO]\n\
-                     - Version       : v2.3.1\n\
-                     - Target File   : {}\n\
-                     - Total Lines   : {}\n\
-                     - Cursor Pos    : Row {}, Col {}\n\
-                     - Target OS/Arch: {} / {}",
+- Version       : v2.4.0\n\
+- Target File   : {}\n\
+- Total Lines   : {}\n\
+- Cursor Pos    : Row {}, Col {}\n\
+- Target OS/Arch: {} / {}",
                     editor.filename.as_deref().unwrap_or("[Untitled]"),
                     editor.lines.len(),
                     editor.cursor.row + 1,
@@ -300,51 +357,56 @@ impl Palette {
                 (info, true)
             }
             PaletteAction::Help => (
-                "📖 [ELIDE v2.3.1 COMMAND PALETTE MANUAL]\n\n\
+                "📖 [ELIDE v2.4.0 COMMAND PALETTE MANUAL]\n\n\
                  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\
                  ⌨️ QUICK HOTKEYS:\n\
-                 - Alt+T                        - Toggle terminal / command palette\n\
-                 - Alt+A                        - Toggle AI Chatbot Assistant\n\
-                 - Alt+L                        - Toggle LSP diagnostics pane\n\
-                 - Alt+D                        - Toggle interactive function/symbol modal\n\n\
+- Alt+T                        - Toggle terminal / command palette\n\
+- Alt+A                        - Toggle AI Chatbot Assistant\n\
+- Alt+L                        - Toggle LSP diagnostics pane\n\
+- Alt+D                        - Toggle interactive function/symbol modal\n\n\
                  📂 FILE & WORKSPACE NAVIGATION:\n\
-                 - tree / :tree / workspace     - Open workspace file tree browser\n\
-                 - new <file>                   - Create and open a new buffer file\n\
-                 - code <file> / switch <file>  - Switch to or open an existing file\n\n\
+- tree / :tree / workspace     - Open workspace file tree browser\n\
+- new <file>                   - Create and open a new buffer file\n\
+- code <file> / switch <file>  - Switch to or open an existing file\n\n\
                  💾 FILE SAVING & EXITING:\n\
-                 - :w / save / -s [file]        - Save current buffer to disk\n\
-                 - wa / :wa / -sa               - Save all open buffers in cache\n\
-                 - :wq / wq / -sl               - Save all buffers and quit editor\n\
-                 - :q! / q! / -l                - Quit editor without saving changes\n\n\
+- :w / save / -s [file]        - Save current buffer to disk\n\
+- wa / :wa / -sa               - Save all open buffers in cache\n\
+- :wq / wq / -sl               - Save all buffers and quit editor\n\
+- :q! / q! / -l                - Quit editor without saving changes\n\n\
+                 🐙 BEGINNER-FRIENDLY GIT INTEGRATION:\n\
+- :git status                  - Check git status of workspace\n\
+- :git new repo                - Initialize a new git repository\n\
+- :git choose repo             - Scan subdirectories for local repositories\n\
+- :git login                   - Check GitHub CLI authentication status\n\
+- :git commit -tags \"msg\" branch \"main\" - Stage, commit, and push in one go\n\n\
                  🔍 SEARCH & CODE EXPLORATION:\n\
-                 - search <term> / / <term>     - Nano-style word search in buffer\n\
-                 - :funcs                       - List all function signatures in buffer\n\n\
+- search <term> / / <term>     - Nano-style word search in buffer\n\
+- :funcs                       - List all function signatures in buffer\n\n\
                  📋 CLIPBOARD MANAGEMENT:\n\
-                 - copy [a-b]                   - Copy entire buffer or line range a-b\n\
-                 - copy term / copy log         - Copy full terminal/command history\n\
-                 - copy lsp                     - Copy active LSP diagnostics\n\
-                 - paste / \"+p                 - Paste from system clipboard\n\n\
+- copy [a-b]                   - Copy entire buffer or line range a-b\n\
+- copy term / copy log         - Copy full terminal/command history\n\
+- copy lsp                     - Copy active LSP diagnostics\n\
+- paste / \"+p                 - Paste from system clipboard\n\n\
                  🤖 AI AUDIT & PROCESSES:\n\
-                 - check <token> <url> [model]  - Connect AI backend (Groq/OpenAI/Ollama)\n\
-                 - check <query>                - Run workspace AI audit or query check\n\
-                 - lsp <cmd>                    - Initialize Language Server Protocol process\n\
-                 - sh <cmd> / !# <cmd>          - Execute background Bash shell command\n\
-                 - acel <cmd> / /! <cmd>        - Run interactive foreground process\n\n\
-                 ☕ WELLNESS & RECOVERY (FULL --im CMDS):\n\
-                 - -bro! / bro                  - Open developer recovery & side quest station\n\
-                 - --im-stuck                   - Get unstuck debugging advice\n\
-                 - --im-bored                   - Get fun coding challenges & game ideas\n\
-                 - --im-hungry                  - Food break reminders\n\
-                 - --im-tired                   - Sleep & rest optimization tips\n\
-                 - --im-stressed                - Breathing & anxiety relief steps\n\
-                 - --im-burntout                - Mental health & recharge guide\n\
-                 - --im-confused                - Rubber duck refactoring tips\n\
-                 - --im-angry                   - Cool down advice for rage bugs\n\
-                 - --im-lonely                  - Friendly developer motivation"
+- check <token> <url> [model]  - Connect AI backend (Groq/OpenAI/Ollama)\n\
+- check <query>                - Run workspace AI audit or query check\n\
+- lsp <cmd>                    - Initialize Language Server Protocol process\n\
+- sh <cmd> / !# <cmd>          - Execute background Bash shell command\n\
+- acel <cmd> / /! <cmd>        - Run interactive foreground process\n\n\
+                 ☕ WELLNESS & RECOVERY:\n\
+- -bro! / bro                  - Open developer recovery & side quest station\n\
+- --im-stuck                   - Get unstuck debugging advice\n\
+- --im-bored                   - Get fun coding challenges & game ideas\n\
+- --im-hungry                  - Food break reminders\n\
+- --im-tired                   - Sleep & rest optimization tips\n\
+- --im-stressed                - Breathing & anxiety relief steps\n\
+- --im-burntout                - Mental health & recharge guide\n\
+- --im-confused                - Rubber duck refactoring tips\n\
+- --im-angry                   - Cool down advice for rage bugs\n\
+- --im-lonely                  - Friendly developer motivation"
                     .to_string(),
                 true,
             ),
-
             PaletteAction::Funcs => {
                 let funcs: Vec<String> = editor.lines.iter()
                     .enumerate()
@@ -366,79 +428,42 @@ impl Palette {
                         "Take a 5-minute walk. Your subconscious will solve the bug while you breathe fresh air.",
                         "Delete the whole function and rewrite it. Sometimes starting clean is faster than fixing spaghetti.",
                         "If it compiles, it's a feature. If it crashes, it's a learning opportunity.",
-                        "Check your git diff. It worked 10 minutes ago, what did you ruin?",
-                        "Comment out the entire file until it compiles, then slowly uncomment your sins."
                     ],
                     "--im-bored" => vec![
                         "Type -bro! for a game recommendation, or rewrite this editor in Brainfuck.",
                         "Try optimizing your loops until your CPU starts screaming.",
                         "Go refactor that one messy file you've been avoiding for three weeks.",
-                        "Challenge yourself to write a game in 10 lines of Bash.",
-                        "Go to GitHub and find a typosquatting issue to fix for easy green squares.",
-                        "Run cargo bench and stare at the numbers like a day trader.",
-                        "Open a markdown file and start drafting your sci-fi novel about AI taking over your job."
                     ],
                     "--im-hungry" => vec![
                         "Go eat! Your code won't compile better on an empty stomach.",
                         "Instant ramen is calling your name. Go fuel up.",
                         "Step away from the screen and grab some water and a snack.",
-                        "A well-fed programmer finds bugs twice as fast.",
-                        "The human brain consumes 20% of your metabolic energy. Go replenish the cache.",
-                        "DoorDash something nutritious. Caffeine and pure spite can only carry you so far.",
-                        "Your blood sugar level is lower than your code coverage. Go eat."
                     ],
                     "--im-tired" => vec![
                         "Git commit, git push, go to bed. The bug will be there tomorrow.",
                         "Sleep is the ultimate compiler optimization for your brain.",
                         "Close your laptop. Nothing good gets coded past 2 AM.",
-                        "Rest now, conquer the segmentation fault tomorrow.",
-                        "You've been staring at a typo for 45 minutes. Go to sleep, you'll see it instantly in the morning.",
-                        "Your brain is currently experiencing high latency. Power down safely.",
-                        "Close your eyes for 20 minutes. It's called a micro-nap, not a crash."
                     ],
                     "--im-stressed" => vec![
                         "Take 3 deep breaths. Drop your shoulders away from your ears.",
                         "Remember: it's just code. No one's life is on the line right now.",
-                        "Step away from the keyboard, stretch your arms, and drink a glass of water.",
-                        "Break the problem down into the tiniest possible piece. Solve just that one micro-step.",
-                        "Your worth as a human being is completely decoupled from your production uptime.",
-                        "The architecture isn't broken, it's just 'evolving unexpectedly'. Take a breath.",
-                        "In the grand scheme of the universe, this merge conflict does not exist."
                     ],
                     "--im-burntout" => vec![
                         "You've been grinding hard. Close ELIDE, touch some grass, and play a game.",
                         "Burnout is your brain's firewall kicking in. Listen to it and log off.",
-                        "Take a guilt-free rest day. Productivity will wait for you.",
-                        "The terminal will still be black and text will still be colorful tomorrow. Go disconnect completely.",
-                        "Cancel your meetings, silence your Slack, and go do absolutely nothing for an afternoon.",
-                        "Your mental heap is fragmented. You need a total cold reboot, not a garbage collection cycle."
                     ],
                     "--im-confused" => vec![
                         "Confusion is just understanding on the horizon. Take a step back and map out the data flow on paper.",
-                        "Trace your variables one by one. You've got this!",
-                        "Draw it out on a physical whiteboard or piece of paper. Abstract code becomes real when it's messy scribbles.",
-                        "If the abstractions are too deep, you've over-engineered it. Strip it back down to a basic loop.",
-                        "The library authors were human too. Read their source code; they probably didn't know what they were doing either."
                     ],
                     "--im-angry" => vec![
                         "Step away from the keyboard before punch-testing your monitor. Go drink ice water.",
-                        "Breathe out slowly. Rage-coding introduces 5 new bugs for every 1 fixed.",
-                        "Do not run git push --force right now. Walk away.",
-                        "The computer is an inanimate object operating on flawless logic. It's not trying to hurt you, it's just dumb.",
-                        "Go scream into a pillow or smash a boxing bag. Then come back and fix the missing semicolon."
                     ],
                     "--im-lonely" => vec![
                         "Open up AI chat (Alt+A) or go grab a coffee with a fellow dev. You're part of an awesome community!",
-                        "Even solo devs have ELIDE and your coffee mug cheering for you.",
-                        "Pop into a Discord server or IRC channel and help a beginner. It feels good to be the expert.",
-                        "You are connected to a global network of millions of sleep-deprived individuals doing the exact same thing."
                     ],
                     _ => vec![
                         "I am an editor, not a therapist. But you got this!",
                         "Keep pushing forward, you're closer than you think.",
-                        "Every expert was once a beginner staring at a blank screen.",
-                        "Command unrecognized, but I believe in you anyway.",
-                        "Error 404: Mood not found. Here is a generic token of emotional validation instead."
                     ],
                 };
 
@@ -448,7 +473,6 @@ impl Palette {
                     .as_millis() as usize;
                 
                 let chosen_response = responses[now % responses.len()].to_string();
-
                 (chosen_response, true)
             }
             PaletteAction::Bro => {
@@ -456,34 +480,13 @@ impl Palette {
                     "🎮 Game Rec: Minecraft (Sandbox / Build & Relax)",
                     "🎮 Game Rec: Touhou Project (Bullet Hell / STG - time to dodge bullet hells instead of bugs)",
                     "🎮 Game Rec: Elden Ring (Action RPG / Exploration)",
-                    "🎮 Game Rec: CS2 (Tactical Shooter / Competitive)",
                     "♟️ Mind Rec: Chess (Strategy / Mental Workout)",
                     "🛌 Meta Rec: Sleep (The Ultimate Recovery Meta)",
-                    "🌿 Game Rec: Stardew Valley (Farming & Chill)",
-                    "🗡️ Game Rec: Hollow Knight (Metroidvania Exploration)",
-                    "🧗 Game Rec: Celeste (Precision Platformer)",
-                    "🎮 Game Rec: Factorio (The factory must grow, but your codebase can wait)",
-                    "🎮 Game Rec: Hades (Rogue-like / Escape your current debugging hell)",
-                    "🎮 Game Rec: Cyberpunk 2077 (To remind yourself that your bugs aren't actually that bad)",
-                    "🎮 Game Rec: Doom Eternal (Rip and tear through your frustration)",
-                    "🎮 Game Rec: Animal Crossing (Maximum chill, zero compiler errors)",
-                    "🏎️ Game Rec: Trackmania (Speedrunning short tracks to reset your brain waves)",
-                    "🧱 Game Rec: Tetris Effect (Visual audio bliss to clean your mental cache)",
-                    "🎮 Game Rec: RimWorld (Manage a colony instead of managing memory leaks)",
-                    "🧠 Mind Rec: Read a physical book (Zero screen-glare, infinite immersion)",
                 ];
-
                 let quests = [
                     "⚔️ Side Quest: Drink a full glass of water without spilling it on your keyboard.",
                     "⚔️ Side Quest: Go outside and look at the sky for at least 3 minutes.",
                     "⚔️ Side Quest: Stretch your back, neck, and wrists right now.",
-                    "⚔️ Side Quest: Text a friend a random meme and close your IDE for 15 minutes.",
-                    "⚔️ Side Quest: Do 10 push-ups or 15 air squats to pump blood back into your brain.",
-                    "⚔️ Side Quest: Fix your posture. Uncross your legs and drop your shoulders.",
-                    "⚔️ Side Quest: Go look at a plant or something green that isn't a successful build terminal.",
-                    "⚔️ Side Quest: Clean three random items off your desk right now.",
-                    "⚔️ Side Quest: Close all 47 browser tabs that you know deep down you aren't going to read.",
-                    "⚔️ Side Quest: Wash your hands and face with cold water to force a quick physical reset.",
                 ];
 
                 let now = std::time::SystemTime::now()
@@ -498,9 +501,9 @@ impl Palette {
                     format!(
                         "🎲 [ELIDE BRO! RECOVERY STATION]\n\n\
                          Listen up, fellow developer. Here is your prescription:\n\n\
-                         - {}\n\
-                         - {}\n\n\
-                         Close the terminal, clear your head, and come back ready to beat Doom!",
+- {}\n\
+- {}\n\n\
+                         Close the terminal, clear your head, and come back ready to code!",
                         chosen_game, chosen_quest
                     ),
                     true,
@@ -540,10 +543,61 @@ impl Palette {
                     }
                 }
             }
+            // Git Action Handlers
+            PaletteAction::GitStatus => match crate::git::GitManager::status() {
+                Ok(out) => (out, true),
+                Err(e) => (format!("Git Error: {}", e), false),
+            },
+            PaletteAction::GitInitRepo => match crate::git::GitManager::init_new_repo() {
+                Ok(out) => (out, true),
+                Err(e) => (format!("Git Error: {}", e), false),
+            },
+            PaletteAction::GitChooseRepo => match crate::git::GitManager::choose_repo() {
+                Ok(out) => (out, true),
+                Err(e) => (format!("Git Error: {}", e), false),
+            },
+            PaletteAction::GitLogin => match crate::git::GitManager::login_check() {
+                Ok(out) => (out, true),
+                Err(e) => (format!("Git Error: {}", e), false),
+            },
+            PaletteAction::GitCommit { message, branch } => {
+                match crate::git::GitManager::quick_save(&message, &branch) {
+                    Ok(out) => (out, true),
+                    Err(e) => (format!("Git Error: {}", e), false),
+                }
+            }
             PaletteAction::UnknownCommand(cmd) => {
                 (format!("tf is {}", cmd), false)
             }
             PaletteAction::Empty => (".Fym there's nothing".to_string(), true),
         }
     }
+}
+
+/// Helper to split command strings while respecting quoted sentences
+fn parse_cli_tokens(input: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+
+    for c in input.chars() {
+        match c {
+            '"' | '\'' => {
+                in_quotes = !in_quotes;
+            }
+            ' ' | '\t' if !in_quotes => {
+                if !current.is_empty() {
+                    tokens.push(current.clone());
+                    current.clear();
+                }
+            }
+            _ => {
+                current.push(c);
+            }
+        }
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
 }

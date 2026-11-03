@@ -1,8 +1,28 @@
+// src/process.rs
 use anyhow::Result;
+use crossterm::{
+    event::{
+        self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste,
+        EnableMouseCapture, Event, KeyCode, KeyEvent, KeyModifiers, MouseEventKind,
+    },
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    ExecutableCommand,
+};
 use nix::sys::resource::{getrusage, UsageWho};
+use std::{
+    fs::OpenOptions,
+    io::{stdout, Write},
+    time::Duration,
+};
+use tokio::{
+    io::AsyncBufReadExt,
+    process::Command,
+};
 use std::process::Stdio;
-use tokio::io::AsyncBufReadExt; // Required for async read_line
-use tokio::process::Command;
+
+// ==========================================
+// 1. PROCESS EXECUTION & RESOURCE TRACKING
+// ==========================================
 
 #[derive(Debug, Clone)]
 pub struct ProcessResult {
@@ -46,7 +66,7 @@ pub async fn run_bash_cmd(cmd_str: &str) -> Result<ProcessResult> {
 
 pub async fn run_interactive_cmd(cmd_str: &str) -> Result<()> {
     // 1. Temporarily surrender the terminal to the child app
-    let _ = crate::terminal::TerminalGuard::suspend();
+    let _ = TerminalGuard::suspend();
 
     // 2. Spawn the process interactively (inheriting stdin/stdout/stderr)
     let mut child = Command::new("/bin/bash")
@@ -69,7 +89,118 @@ pub async fn run_interactive_cmd(cmd_str: &str) -> Result<()> {
     let _ = stdin.read_line(&mut pause_buf).await;
 
     // 5. Reclaim the terminal UI for ELIDE
-    let _ = crate::terminal::TerminalGuard::resume();
+    let _ = TerminalGuard::resume();
 
     Ok(())
+}
+
+// ==========================================
+// 2. TERMINAL MANAGEMENT & INPUT EVENTS
+// ==========================================
+
+#[allow(dead_code)]
+pub enum InputEvent {
+    Key(crossterm::event::KeyEvent),
+    Paste(String),
+    Resize,
+    ScrollUp,
+    ScrollDown,
+    Tick,
+}
+
+pub struct TerminalGuard;
+
+impl TerminalGuard {
+    pub fn init() -> Result<Self> {
+        enable_raw_mode()?;
+        stdout().execute(EnterAlternateScreen)?;
+        stdout().execute(EnableMouseCapture)?;
+        stdout().execute(EnableBracketedPaste)?;
+        Ok(Self)
+    }
+
+    /// Call this right BEFORE spawning a foreground process
+    pub fn suspend() -> Result<()> {
+        stdout().execute(DisableBracketedPaste)?;
+        stdout().execute(DisableMouseCapture)?;
+        stdout().execute(LeaveAlternateScreen)?;
+        disable_raw_mode()?;
+        Ok(())
+    }
+
+    /// Call this right AFTER the foreground process exits
+    pub fn resume() -> Result<()> {
+        enable_raw_mode()?;
+        stdout().execute(EnterAlternateScreen)?;
+        stdout().execute(EnableMouseCapture)?;
+        stdout().execute(EnableBracketedPaste)?;
+        Ok(())
+    }
+}
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        let _ = TerminalGuard::suspend();
+    }
+}
+
+#[allow(dead_code)]
+pub fn poll_event(timeout: Duration) -> Result<InputEvent> {
+    if event::poll(timeout)? {
+        match event::read()? {
+            Event::Key(key) => Ok(InputEvent::Key(key)),
+            Event::Paste(s) => Ok(InputEvent::Paste(s)),
+            Event::Resize(_, _) => Ok(InputEvent::Resize),
+            Event::Mouse(mouse) => match mouse.kind {
+                MouseEventKind::ScrollUp => Ok(InputEvent::ScrollUp),
+                MouseEventKind::ScrollDown => Ok(InputEvent::ScrollDown),
+                _ => Ok(InputEvent::Tick),
+            },
+            _ => Ok(InputEvent::Tick),
+        }
+    } else {
+        Ok(InputEvent::Tick)
+    }
+}
+
+pub fn is_alt_t(key: &KeyEvent) -> bool {
+    key.modifiers.contains(KeyModifiers::ALT) && key.code == KeyCode::Char('t')
+}
+
+pub fn is_alt_l(key: &KeyEvent) -> bool {
+    key.modifiers.contains(KeyModifiers::ALT) && key.code == KeyCode::Char('l')
+}
+
+pub fn is_esc(key: &KeyEvent) -> bool {
+    key.code == KeyCode::Esc
+}
+
+// ==========================================
+// 3. KERNEL TRACER & DEBUG LOGGING
+// ==========================================
+
+#[derive(Debug, Clone)]
+pub struct KernelTracer {
+    pub active: bool,
+}
+
+impl KernelTracer {
+    pub fn init() -> Self {
+        // Clear the log file on startup
+        let _ = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open("elide_debug.log");
+            
+        Self { active: true }
+    }
+
+    pub fn log_event(&self, event: &str) {
+        if self.active {
+            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("elide_debug.log") {
+                let _ = writeln!(file, "[DEBUG] {}", event);
+            }
+        }
+    }
 }

@@ -4,12 +4,59 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::Path;
 use std::process::Stdio;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
 
-use crate::diagnostics::Diagnostic;
-use crate::lsp_writer::LspWriter;
+// ==========================================
+// 1. DIAGNOSTICS STRUCTURE
+// ==========================================
+
+#[derive(Debug, Clone)]
+pub struct Diagnostic {
+    pub line: usize,
+    pub message: String,
+    pub severity: Option<u8>,
+}
+
+// ==========================================
+// 2. LSP WRITER (Background Stdin Pipe Manager)
+// ==========================================
+
+#[derive(Clone)]
+pub struct LspWriter {
+    tx: mpsc::UnboundedSender<Value>,
+}
+
+impl LspWriter {
+    /// Spawns a dedicated background task owning `stdin` so the pipe is never dropped.
+    pub fn spawn(mut stdin: tokio::process::ChildStdin) -> Self {
+        let (tx, mut rx) = mpsc::unbounded_channel::<Value>();
+
+        tokio::spawn(async move {
+            while let Some(msg) = rx.recv().await {
+                let msg_str = msg.to_string();
+                let payload = format!("Content-Length: {}\r\n\r\n{}", msg_str.len(), msg_str);
+
+                if stdin.write_all(payload.as_bytes()).await.is_err() || stdin.flush().await.is_err() {
+                    break; // Process terminated or pipe closed
+                }
+            }
+        });
+
+        Self { tx }
+    }
+
+    /// Non-blocking method to queue JSON-RPC payloads to the LSP server.
+    pub fn send(&self, msg: Value) -> Result<()> {
+        self.tx.send(msg)?;
+        Ok(())
+    }
+}
+
+// ==========================================
+// 3. LSP CLIENT & MANAGEMENT
+// ==========================================
 
 pub struct LspClient {
     pub server_name: String,
@@ -239,7 +286,9 @@ impl Default for LspClient {
     }
 }
 
-// --- Directory Scanning Logic ---
+// ==========================================
+// 4. DIRECTORY SCANNING & LANGUAGE IDENTIFICATION
+// ==========================================
 
 /// Scans the directory recursively to find the most used language.
 pub fn detect_workspace_language(dir: &str) -> Option<&'static str> {
@@ -275,8 +324,6 @@ pub fn detect_workspace_language(dir: &str) -> Option<&'static str> {
         .max_by_key(|&(_, count)| count)
         .map(|(lang, _)| lang)
 }
-
-// --- Helper Functions ---
 
 async fn read_lsp_message<R: AsyncBufReadExt + Unpin>(reader: &mut R) -> Result<Vec<u8>> {
     let mut len = 0;
@@ -317,9 +364,6 @@ fn get_file_uri(filename: &str) -> String {
 pub fn get_language_id(filename: &str) -> &'static str {
     let lowercase_name = filename.to_lowercase();
     
-    // ==========================================
-    // 🔀 FILENAME OVERRIDES (No Uniform Extensions)
-    // ==========================================
     if lowercase_name.ends_with("dockerfile") || lowercase_name.starts_with("dockerfile.") {
         return "dockerfile";
     }
@@ -335,9 +379,6 @@ pub fn get_language_id(filename: &str) -> &'static str {
 
     let ext = filename.rsplit('.').next().unwrap_or("");
     match ext {
-        // ==========================================
-        // 🚀 SYSTEMS & NATIVE LANGUAGES
-        // ==========================================
         "rs" => "rust",
         "zig" => "zig",
         "c" => "c",
@@ -347,10 +388,6 @@ pub fn get_language_id(filename: &str) -> &'static str {
         "nim" => "nim",
         "v" => "v",
         "asm" | "s" => "assembly",
-
-        // ==========================================
-        // 🎮 GAME DEVELOPMENT & GRAPHICS SHADERS
-        // ==========================================
         "gd" => "gdscript",
         "cs" => "csharp",
         "glsl" | "vert" | "frag" | "geom" | "comp" => "glsl",
@@ -358,30 +395,18 @@ pub fn get_language_id(filename: &str) -> &'static str {
         "wgsl" => "wgsl",
         "shader" => "unity-shader",
         "brres" | "gsh" => "graphics-resource", 
-
-        // ==========================================
-        // ☕ GENERAL PURPOSE & ENTERPRISE
-        // ==========================================
         "java" => "java",
         "kt" | "kts" => "kotlin",
         "scala" | "sc" => "scala",
         "swift" => "swift",
         "oc" | "m" | "mm" => "objective-c",
         "adb" | "ads" | "ada" | "gpr" => "ada",
-
-        // ==========================================
-        // 🐍 SCRIPTING & DYNAMIC LANGUAGES
-        // ==========================================
         "py" | "pyw" => "python",
         "rb" | "rbw" | "gemspec" => "ruby",
         "php" => "php",
         "pl" | "pm" | "t" => "perl",
         "lua" => "lua",
         "tcl" => "tcl",
-
-        // ==========================================
-        // 🌐 WEB DEVELOPMENT (Core, Frameworks, CSS)
-        // ==========================================
         "js" | "jsx" | "mjs" | "cjs" => "javascript",
         "ts" | "tsx" | "mts" | "cts" => "typescript",
         "html" | "htm" => "html",
@@ -392,34 +417,18 @@ pub fn get_language_id(filename: &str) -> &'static str {
         "vue" => "vue",
         "astro" => "astro",
         "graphql" | "gql" => "graphql",
-
-        // ==========================================
-        // 🧠 FUNCTIONAL LANGUAGES
-        // ==========================================
         "hs" | "lhs" => "haskell",
         "ml" | "mli" => "ocaml",
         "ex" | "exs" => "elixir",
         "erl" | "hrl" => "erlang",
         "clj" | "cljs" | "edn" => "clojure",
         "gleam" => "gleam",
-
-        // ==========================================
-        // 📊 DATA SCIENCE, MATH & BLOCKCHAIN
-        // ==========================================
         "jl" => "julia",
         "r" | "rmd" => "r",
         "sol" => "solidity",
         "move" => "move",
-
-        // ==========================================
-        // 🐚 SHELL & AUTOMATION
-        // ==========================================
         "sh" | "bash" | "zsh" => "bash",
         "ps1" | "psm1" => "powershell",
-
-        // ==========================================
-        // 🛠️ DEVOPS, INFRASTRUCTURE & CONFIGS
-        // ==========================================
         "json" | "jsonc" => "json",
         "yaml" | "yml" => "yaml",
         "toml" => "toml",
@@ -432,10 +441,6 @@ pub fn get_language_id(filename: &str) -> &'static str {
         "nix" => "nix",
         "dockerfile" | "docker" => "dockerfile",
         "wit" => "wit",
-
-        // ==========================================
-        // 📝 DATA FILES & DOCUMENTATION
-        // ==========================================
         "sql" => "sql",
         "csv" => "csv",
         "tsv" => "tsv",
@@ -445,10 +450,6 @@ pub fn get_language_id(filename: &str) -> &'static str {
         "asciidoc" | "adoc" => "asciidoc",
         "org" => "org",
         "diff" | "patch" => "diff",
-
-        // ==========================================
-        // 📄 FALLBACK
-        // ==========================================
         _ => "plaintext",
     }
 }

@@ -3,81 +3,72 @@
 
 mod editor;
 mod palette;
-mod terminal;
 mod lsp;
-mod diagnostics;
 mod process;
 mod colors;
-mod tracer;
-mod lsp_writer;
 mod ai;
 mod clipboard;
+mod git;
 
 use anyhow::Result;
-use colors::{Theme, ThemePalette, palette_for};
-use crossterm::{
-    cursor,
-    event::KeyCode,
-    style::{Attribute, ResetColor, SetAttribute, SetBackgroundColor, SetForegroundColor},
-    terminal::{Clear, ClearType},
-    ExecutableCommand,
-};
+use colors::{palette_for, Theme};
+use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use editor::Editor;
-use lsp::LspClient;
-use palette::{Palette, PaletteAction};
+use lsp::{Diagnostic, LspClient};
+use palette::Palette;
+use ratatui::{
+    backend::CrosstermBackend,
+    layout::{Constraint, Direction, Layout, Position, Rect},
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, Clear, Paragraph},
+    Terminal,
+};
 use std::{
     collections::HashMap,
-    io::{stdout, Stdout, Write},
-    path::Path,
+    io::stdout,
     time::Duration,
 };
 use tokio::sync::mpsc;
-use terminal::InputEvent;
+use process::{TerminalGuard, KernelTracer};
 
-fn flush_token(stdout: &mut Stdout, word: &mut String, next_char: Option<char>, p: &ThemePalette) -> std::io::Result<()> {
-    if word.is_empty() {
-        return Ok(());
+fn to_ratatui_color(c: crossterm::style::Color) -> Color {
+    match c {
+        crossterm::style::Color::Rgb { r, g, b } => Color::Rgb(r, g, b),
+        crossterm::style::Color::Black => Color::Black,
+        crossterm::style::Color::DarkGrey => Color::DarkGray,
+        crossterm::style::Color::Red => Color::Red,
+        crossterm::style::Color::DarkRed => Color::Indexed(52),
+        crossterm::style::Color::Green => Color::Green,
+        crossterm::style::Color::DarkGreen => Color::Indexed(22),
+        crossterm::style::Color::Yellow => Color::Yellow,
+        crossterm::style::Color::DarkYellow => Color::Indexed(136),
+        crossterm::style::Color::Blue => Color::Blue,
+        crossterm::style::Color::DarkBlue => Color::Indexed(18),
+        crossterm::style::Color::Magenta => Color::Magenta,
+        crossterm::style::Color::DarkMagenta => Color::Indexed(90),
+        crossterm::style::Color::Cyan => Color::Cyan,
+        crossterm::style::Color::DarkCyan => Color::Indexed(30),
+        crossterm::style::Color::White => Color::White,
+        crossterm::style::Color::Grey => Color::Gray,
+        _ => Color::Reset,
     }
-    let color = match word.as_str() {
-        "fn" | "let" | "mut" | "return" | "if" | "else" | "match" | "struct" | "enum" | "pub" | "use" | "impl" | "for" | "while" | "loop" | "const" | "static" | "async" | "await" | "trait" | "type" | "as" | "ref" | "mod" | "where" | "dyn" | "move" | "unsafe" | "extern" | "break" | "continue" => p.keyword,
-        "String" | "usize" | "isize" | "i8" | "i16" | "i32" | "i64" | "i128" | "u8" | "u16" | "u32" | "u64" | "u128" | "f32" | "f64" | "bool" | "char" | "Vec" | "Option" | "Result" | "Self" | "Box" | "Rc" | "Arc" | "HashMap" | "BTreeMap" => p.type_color,
-        "true" | "false" | "Some" | "None" | "Ok" | "Err" => p.number,
-        _ => {
-            if word.starts_with('\'') {
-                p.string
-            } else if word.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '_') || word.starts_with("0x") {
-                p.number
-            } else if next_char == Some('(') || next_char == Some('!') {
-                p.function
-            } else {
-                p.text
-            }
-        }
-    };
-    stdout.execute(SetForegroundColor(color))?;
-    write!(stdout, "{}", word)?;
-    word.clear();
-    Ok(())
 }
 
 struct AppState {
     editor: Editor,
     palette: Palette,
     lsp_client: LspClient,
-    current_diagnostics: HashMap<String, Vec<diagnostics::Diagnostic>>,
+    current_diagnostics: HashMap<String, Vec<Diagnostic>>,
     command_history: Vec<(String, bool)>,
     clipboard: String,
     doc_version: u32,
     buffer_cache: HashMap<String, Vec<String>>,
     pub should_exit: bool,
     show_lsp_pane: bool,
-    lsp_scroll_offset: usize,
-    term_scroll_y: usize,
-    term_scroll_x: usize,
     pub show_ai_chat: bool,
     pub ai_input_buffer: String,
     pub ai_messages: Vec<(String, String)>,
-    pub ai_scroll_offset: usize,
     pub show_symbol_finder: bool,
     pub symbol_query: String,
     pub symbol_selected_idx: usize,
@@ -97,13 +88,9 @@ impl AppState {
             buffer_cache: HashMap::new(),
             should_exit: false,
             show_lsp_pane: false,
-            lsp_scroll_offset: 0,
-            term_scroll_y: 0,
-            term_scroll_x: 0,
             show_ai_chat: false,
             ai_input_buffer: String::new(),
             ai_messages: Vec::new(),
-            ai_scroll_offset: 0,
             show_symbol_finder: false,
             symbol_query: String::new(),
             symbol_selected_idx: 0,
@@ -125,12 +112,15 @@ impl AppState {
     fn open_buffered_file(&mut self, path_str: &str) -> Result<()> {
         self.cache_current_buffer();
         let canonical_path = Self::normalize_path(path_str);
+        
+        // Notify LSP client about the opened file (2 arguments)
+        let full_text = std::fs::read_to_string(&canonical_path).unwrap_or_default();
+        let _ = self.lsp_client.open_file(&canonical_path, &full_text);
+
         if let Some(cached_lines) = self.buffer_cache.get(&canonical_path) {
             self.editor.lines = cached_lines.clone();
             self.editor.filename = Some(canonical_path);
             self.editor.cursor = editor::Cursor { row: 0, col: 0 };
-            self.editor.row_offset = 0;
-            self.editor.col_offset = 0;
             self.editor.is_dirty = true;
         } else {
             self.editor.open(path_str)?;
@@ -146,8 +136,6 @@ impl AppState {
         self.editor.filename = Some(canonical_path.clone());
         self.editor.lines = vec![String::new()];
         self.editor.cursor = editor::Cursor { row: 0, col: 0 };
-        self.editor.row_offset = 0;
-        self.editor.col_offset = 0;
         self.editor.is_dirty = true;
         self.buffer_cache.insert(canonical_path, self.editor.lines.clone());
         Ok(())
@@ -172,35 +160,29 @@ impl AppState {
         Ok(format!("Successfully saved {} buffer(s) to disk.", saved_count))
     }
 
-    async fn handle_input(&mut self, key: crossterm::event::KeyEvent, diag_tx: &mpsc::UnboundedSender<(String, Vec<diagnostics::Diagnostic>)>) -> bool {
-        if terminal::is_esc(&key) {
+    async fn handle_input(&mut self, key: crossterm::event::KeyEvent, diag_tx: &mpsc::UnboundedSender<(String, Vec<Diagnostic>)>) -> bool {
+        if process::is_esc(&key) {
             if self.show_symbol_finder {
                 self.show_symbol_finder = false;
             } else if self.show_ai_chat {
                 self.show_ai_chat = false;
             } else if self.palette.is_active {
                 self.palette.is_active = false;
-            } else {
-                return false;
             }
-        } else if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) && key.code == KeyCode::Char('d') {
+        } else if key.modifiers.contains(KeyModifiers::ALT) && key.code == KeyCode::Char('d') {
             self.show_symbol_finder = !self.show_symbol_finder;
             self.symbol_query.clear();
             self.symbol_selected_idx = 0;
         } else if self.show_symbol_finder {
             self.handle_symbol_finder_input(key);
-        } else if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) && key.code == KeyCode::Char('a') {
+        } else if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('a') {
             self.show_ai_chat = !self.show_ai_chat;
         } else if self.show_ai_chat {
             self.handle_ai_chat_input(key).await;
-        } else if terminal::is_alt_t(&key) {
+        } else if process::is_alt_t(&key) {
             self.palette.is_active = !self.palette.is_active;
-        } else if terminal::is_alt_l(&key) {
+        } else if process::is_alt_l(&key) {
             self.show_lsp_pane = !self.show_lsp_pane;
-        } else if terminal::is_alt_up(&key) {
-            self.lsp_scroll_offset = self.lsp_scroll_offset.saturating_sub(1);
-        } else if terminal::is_alt_down(&key) {
-            self.lsp_scroll_offset = self.lsp_scroll_offset.saturating_add(1);
         } else if self.palette.is_active {
             self.handle_terminal_input(key, diag_tx).await;
         } else {
@@ -211,7 +193,7 @@ impl AppState {
 
     fn handle_symbol_finder_input(&mut self, key: crossterm::event::KeyEvent) {
         match key.code {
-            KeyCode::Esc => { self.show_symbol_finder = false; }
+            KeyCode::Esc => self.show_symbol_finder = false,
             KeyCode::Char(c) => {
                 self.symbol_query.push(c);
                 self.symbol_selected_idx = 0;
@@ -244,10 +226,10 @@ impl AppState {
     fn get_filtered_symbols(&self) -> Vec<(usize, String)> {
         self.editor.lines.iter().enumerate().filter_map(|(idx, line)| {
             let trimmed = line.trim();
-            if trimmed.starts_with("fn ") || trimmed.starts_with("pub fn ") || trimmed.starts_with("async fn ") || trimmed.starts_with("pub async fn ") {
+            if trimmed.starts_with("fn ") || trimmed.starts_with("pub fn ") || trimmed.starts_with("async fn ") {
                 let func_name = trimmed.trim_end_matches('{').trim();
                 if self.symbol_query.is_empty() || func_name.to_lowercase().contains(&self.symbol_query.to_lowercase()) {
-                    return Some((idx, format!("L{}: {}", idx+1, func_name)));
+                    return Some((idx, format!("L{}: {}", idx + 1, func_name)));
                 }
             }
             None
@@ -260,187 +242,86 @@ impl AppState {
                 let prompt = self.ai_input_buffer.trim().to_string();
                 self.ai_input_buffer.clear();
                 if !prompt.is_empty() {
-                    let mut full_prompt = prompt;
-                    if !self.current_diagnostics.is_empty() {
-                        full_prompt.push_str("\n\n--- Current Compiler / LSP Diagnostics Log ---");
-                        let mut sorted_uris: Vec<_> = self.current_diagnostics.keys().collect();
-                        sorted_uris.sort();
-                        for uri in sorted_uris {
-                            let diags = &self.current_diagnostics[uri];
-                            let filename = uri.rsplit('/').next().unwrap_or(uri);
-                            for diag in diags {
-                                full_prompt.push_str(&format!("\n- {}:L{}: {}", filename, diag.line, diag.message));
-                            }
-                        }
-                    }
-
-                    self.ai_messages.push(("user".to_string(), full_prompt));
+                    self.ai_messages.push(("user".to_string(), prompt));
                     let root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
                     let messages = self.ai_messages.clone();
-
-                    match crate::ai::run_chat_stream(&root, messages).await {
-                        Ok(response) => {
-                            self.ai_messages.push(("assistant".to_string(), response));
-                        }
-                        Err(e) => {
-                            self.ai_messages.push(("assistant".to_string(), format!("❌ AI Error: {}", e)));
-                        }
+                    match ai::run_chat_stream(&root, messages).await {
+                        Ok(res) => self.ai_messages.push(("assistant".to_string(), res)),
+                        Err(e) => self.ai_messages.push(("assistant".to_string(), format!("Error: {}", e))),
                     }
                 }
             }
             KeyCode::Char(c) => self.ai_input_buffer.push(c),
             KeyCode::Backspace => { self.ai_input_buffer.pop(); }
-            KeyCode::Up => self.ai_scroll_offset = self.ai_scroll_offset.saturating_add(1),
-            KeyCode::Down => self.ai_scroll_offset = self.ai_scroll_offset.saturating_sub(1),
             _ => {}
         }
     }
 
-    async fn handle_terminal_input(&mut self, key: crossterm::event::KeyEvent, diag_tx: &mpsc::UnboundedSender<(String, Vec<diagnostics::Diagnostic>)>) {
+    async fn handle_terminal_input(&mut self, key: crossterm::event::KeyEvent, diag_tx: &mpsc::UnboundedSender<(String, Vec<Diagnostic>)>) {
         match key.code {
-            KeyCode::Up => self.term_scroll_y = self.term_scroll_y.saturating_add(1),
-            KeyCode::Down => self.term_scroll_y = self.term_scroll_y.saturating_sub(1),
-            KeyCode::Left => self.term_scroll_x = self.term_scroll_x.saturating_sub(1),
-            KeyCode::Right => self.term_scroll_x = self.term_scroll_x.saturating_add(1),
             KeyCode::Enter => {
-                self.term_scroll_y = 0;
-                self.term_scroll_x = 0;
                 let raw_input = self.palette.input_buffer.trim().to_string();
 
-                // Intercept theme switching command
                 if let Some(theme_name) = raw_input.strip_prefix("theme:") {
-                    let new_theme = match theme_name.trim().to_lowercase().as_str() {
-                        "serenity" => Some(Theme::Serenity),
-                        "shrine" | "spring" => Some(Theme::SpringAtTheShrine),
-                        "tokyo" | "tokyonight" => Some(Theme::TokyoNight),
-                        "firefly" | "graveyard" => Some(Theme::GraveyardOfTheFirefly),
-                        "ocean" | "deep" => Some(Theme::DeepOcean),
-                        "forest" | "magic" => Some(Theme::MagicForest),
-                        "swamp" | "swampy" => Some(Theme::Swampy),
-                        "harvest" | "autumn" => Some(Theme::HarvestTime),
-                        _ => None,
+                    let t = match theme_name.trim().to_lowercase().as_str() {
+                        "shrine" => Theme::SpringAtTheShrine,
+                        "tokyo" => Theme::TokyoNight,
+                        "firefly" => Theme::GraveyardOfTheFirefly,
+                        "ocean" => Theme::DeepOcean,
+                        "forest" => Theme::MagicForest,
+                        "swamp" => Theme::Swampy,
+                        "harvest" => Theme::HarvestTime,
+                        _ => Theme::Serenity,
                     };
+                    self.current_theme = t;
+                    self.command_history.push((format!("Theme switched to {:?}", t), true));
+                    self.palette.input_buffer.clear();
+                    return;
+                }
 
-                    if let Some(t) = new_theme {
-                        self.current_theme = t;
-                        let msg = format!("🎨 Theme switched successfully to {:?}!", self.current_theme);
+                let action = self.palette.parse_command(self.editor.filename.as_deref());
+                match action {
+                    palette::PaletteAction::Quit => {
+                        self.should_exit = true;
+                        self.palette.input_buffer.clear();
+                        return;
+                    }
+                    palette::PaletteAction::SaveAndQuit => {
+                        let _ = self.save_all_buffers();
+                        self.should_exit = true;
+                        self.palette.input_buffer.clear();
+                        return;
+                    }
+                    palette::PaletteAction::SaveAll => {
+                        let msg = self.save_all_buffers().unwrap_or_else(|e| e);
                         self.command_history.push((msg, true));
                         self.palette.input_buffer.clear();
                         return;
                     }
+                    palette::PaletteAction::New(ref filename) => {
+                        if !filename.is_empty() {
+                            let _ = self.new_buffered_file(filename);
+                        }
+                        self.palette.input_buffer.clear();
+                        return;
+                    }
+                    palette::PaletteAction::Code(ref filename) | palette::PaletteAction::Switch(ref filename) => {
+                        if !filename.is_empty() {
+                            let _ = self.open_buffered_file(filename);
+                        }
+                        self.palette.input_buffer.clear();
+                        return;
+                    }
+                    _ => {}
                 }
 
-                let action = self.palette.parse_command(self.editor.filename.as_deref());
                 let lsp_start_cmd = match &action {
-                    PaletteAction::SetLsp(cmd) if !cmd.is_empty() => Some(cmd.clone()),
+                    palette::PaletteAction::SetLsp(cmd) if !cmd.is_empty() => Some(cmd.clone()),
                     _ => None,
                 };
-                let (msg, success) = match action.clone() {
-                    PaletteAction::SaveAll => {
-                        match self.save_all_buffers() {
-                            Ok(m) => (m, true),
-                            Err(e) => (format!("Save All Error: {}", e), false),
-                        }
-                    }
-                    PaletteAction::Quit => {
-                        self.should_exit = true;
-                        ("Quitting without saving...".to_string(), true)
-                    }
-                    PaletteAction::SaveAndQuit => {
-                        self.cache_current_buffer();
-                        match self.save_all_buffers() {
-                            Ok(m) => {
-                                self.should_exit = true;
-                                (format!("{} Quitting...", m), true)
-                            }
-                            Err(e) => (format!("Save Error: {}", e), false),
-                        }
-                    }
-                    PaletteAction::Code(ref filename) | PaletteAction::Switch(ref filename) => {
-                        if filename.is_empty() {
-                            ("Error: Specify a file.".to_string(), false)
-                        } else {
-                            match self.open_buffered_file(filename) {
-                                Ok(_) => (format!("Switched to file: {}", filename), true),
-                                Err(e) => (format!("Failed to open {}: {}", filename, e), false),
-                            }
-                        }
-                    }
-                    PaletteAction::New(ref filename) => {
-                        if filename.is_empty() {
-                            ("Error: Filename cannot be empty.".to_string(), false)
-                        } else {
-                            match self.new_buffered_file(filename) {
-                                Ok(_) => (format!("Created new buffer: {}", filename), true),
-                                Err(e) => (format!("Failed to create {}: {}", filename, e), false),
-                            }
-                        }
-                    }
-                    PaletteAction::Tree => {
-                        self.cache_current_buffer();
-                        let curr_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-                        match std::fs::read_dir(&curr_dir) {
-                            Ok(entries) => {
-                                let mut lines = vec![
-                                    format!(" Workspace: {}", curr_dir.display()),
-                                    " ──────────────────────────────────────────".to_string(),
-                                    " ../".to_string(),
-                                ];
-                                let mut sorted_entries: Vec<String> = entries.flatten().filter_map(|e| {
-                                    let name = e.file_name().to_string_lossy().to_string();
-                                    if name.starts_with('.') || name == "target" || name == "node_modules" { return None; }
-                                    if e.path().is_dir() { Some(format!("{}/", name)) } else { Some(name.to_string()) }
-                                }).collect();
-                                sorted_entries.sort();
-                                lines.extend(sorted_entries);
-                                self.editor.lines = lines;
-                                self.editor.filename = None;
-                                self.editor.cursor.row = 0;
-                                self.editor.cursor.col = 0;
-                                self.editor.row_offset = 0;
-                                self.editor.col_offset = 0;
-                                ("Returned to workspace file tree.".to_string(), true)
-                            }
-                            Err(e) => (format!("Failed to read workspace directory: {}", e), false),
-                        }
-                    }
-                    PaletteAction::CopyTerm => {
-                        let text_to_copy = self.command_history.iter().map(|(msg, _)| msg.clone()).collect::<Vec<String>>().join("\n");
-                        self.clipboard = text_to_copy.clone();
-                        let mut clip_mgr = clipboard::SystemClipboard::new();
-                        match clip_mgr.set_text(&text_to_copy) {
-                            Ok(_) => ("Copied terminal log to clipboard!".to_string(), true),
-                            Err(e) => (format!("Copied internally, but clipboard sync warned: {}", e), false),
-                        }
-                    }
-                    PaletteAction::CopyLsp => {
-                        let mut wrapped_lines = Vec::new();
-                        let mut sorted_uris: Vec<_> = self.current_diagnostics.keys().collect();
-                        sorted_uris.sort();
-                        for uri in sorted_uris {
-                            let diags = &self.current_diagnostics[uri];
-                            let filename = uri.rsplit('/').next().unwrap_or("?");
-                            for diag in diags {
-                                wrapped_lines.push(format!("{}:L{}: {}", filename, diag.line, diag.message));
-                            }
-                        }
-                        let text_to_copy = if wrapped_lines.is_empty() {
-                            "No LSP diagnostics to copy (Nominal).".to_string()
-                        } else {
-                            wrapped_lines.join("\n")
-                        };
-                        self.clipboard = text_to_copy.clone();
-                        let mut clip_mgr = clipboard::SystemClipboard::new();
-                        match clip_mgr.set_text(&text_to_copy) {
-                            Ok(_) => ("Copied LSP diagnostics to clipboard!".to_string(), true),
-                            Err(e) => (format!("Copied internally, but clipboard sync warned: {}", e), false),
-                        }
-                    }
-                    _ => {
-                        self.palette.execute_action(action, &mut self.editor, &mut self.clipboard).await
-                    }
-                };
 
+                let (msg, success) = self.palette.execute_action(action, &mut self.editor, &mut self.clipboard).await;
+                
                 if let Some(cmd) = lsp_start_cmd {
                     let curr_dir = std::env::current_dir().unwrap_or_default().to_string_lossy().to_string();
                     let target_lang = if let Some(ref fname) = self.editor.filename {
@@ -448,16 +329,10 @@ impl AppState {
                     } else {
                         lsp::detect_workspace_language(&curr_dir).unwrap_or("plaintext")
                     };
-                    if let Err(e) = self.lsp_client.init_workspace(&cmd, target_lang, &curr_dir, diag_tx.clone()).await {
-                        self.command_history.push((format!("LSP Boot Error: {}", e), false));
-                    } else {
-                        self.show_lsp_pane = true;
-                        if let Some(ref filename) = self.editor.filename {
-                            let text = self.editor.lines.join("\n");
-                            let _ = self.lsp_client.open_file(filename, &text);
-                        }
-                    }
+                    let _ = self.lsp_client.init_workspace(&cmd, target_lang, &curr_dir, diag_tx.clone()).await;
+                    self.show_lsp_pane = true;
                 }
+
                 self.command_history.push((msg, success));
                 self.palette.input_buffer.clear();
             }
@@ -470,34 +345,10 @@ impl AppState {
     fn handle_editor_input(&mut self, key: crossterm::event::KeyEvent) {
         let mut text_changed = false;
         match key.code {
-            KeyCode::Char(c) => {
-                if self.editor.filename.is_some() {
-                    self.editor.insert_char(c);
-                    text_changed = true;
-                }
-            }
-            KeyCode::Enter => {
-                if self.editor.filename.is_none() {
-                    self.open_selected_tree_item();
-                } else {
-                    self.editor.insert_newline();
-                    text_changed = true;
-                }
-            }
-            KeyCode::Backspace => {
-                if self.editor.filename.is_some() {
-                    self.editor.backspace();
-                    text_changed = true;
-                } else {
-                    self.open_parent_directory();
-                }
-            }
-            KeyCode::Delete => {
-                if self.editor.filename.is_some() {
-                    self.editor.delete_char();
-                    text_changed = true;
-                }
-            }
+            KeyCode::Char(c) => { if self.editor.filename.is_some() { self.editor.insert_char(c); text_changed = true; } }
+            KeyCode::Enter => { if self.editor.filename.is_some() { self.editor.insert_newline(); text_changed = true; } }
+            KeyCode::Backspace => { if self.editor.filename.is_some() { self.editor.backspace(); text_changed = true; } }
+            KeyCode::Delete => { if self.editor.filename.is_some() { self.editor.delete_char(); text_changed = true; } }
             KeyCode::Left => self.editor.move_cursor(0, -1),
             KeyCode::Right => self.editor.move_cursor(0, 1),
             KeyCode::Up => self.editor.move_cursor(-1, 0),
@@ -512,587 +363,167 @@ impl AppState {
             }
         }
     }
-
-    fn open_parent_directory(&mut self) {
-        if self.editor.filename.is_none() {
-            let parent_path = std::path::Path::new("..");
-            if let Ok(canonical_dir) = std::fs::canonicalize(parent_path) {
-                let _ = std::env::set_current_dir(&canonical_dir);
-                if let Ok(entries) = std::fs::read_dir(&canonical_dir) {
-                    let mut lines = vec![
-                        format!(" Workspace: {}", canonical_dir.display()),
-                        " ──────────────────────────────────────────".to_string(),
-                        " ../".to_string(),
-                    ];
-                    let mut sorted_entries: Vec<String> = entries.flatten().filter_map(|e| {
-                        let name = e.file_name().to_string_lossy().to_string();
-                        if name.starts_with('.') || name == "target" || name == "node_modules" { return None; }
-                        if e.path().is_dir() { Some(format!("{}/", name)) } else { Some(name.to_string()) }
-                    }).collect();
-                    sorted_entries.sort();
-                    lines.extend(sorted_entries);
-                    self.editor.lines = lines;
-                    self.editor.cursor.row = 0;
-                    self.editor.cursor.col = 0;
-                    self.editor.row_offset = 0;
-                    self.editor.col_offset = 0;
-                }
-            }
-        }
-    }
-
-    fn open_selected_tree_item(&mut self) {
-        let row = self.editor.cursor.row;
-        if row >= self.editor.lines.len() { return; }
-        let raw_line = &self.editor.lines[row];
-        let trimmed = raw_line.trim();
-        if trimmed.is_empty() || trimmed.starts_with("Workspace:") || trimmed.starts_with('─') { return; }
-        let target_str = trimmed.trim_end_matches('/');
-        let path = Path::new(target_str);
-        if path.is_dir() {
-            if let Ok(canonical_dir) = std::fs::canonicalize(path) {
-                let _ = std::env::set_current_dir(&canonical_dir);
-                if let Ok(entries) = std::fs::read_dir(&canonical_dir) {
-                    let mut lines = vec![
-                        format!(" Workspace: {}", canonical_dir.display()),
-                        " ──────────────────────────────────────────".to_string(),
-                        " ../".to_string(),
-                    ];
-                    let mut sorted_entries: Vec<String> = entries.flatten().filter_map(|e| {
-                        let name = e.file_name().to_string_lossy().to_string();
-                        if name.starts_with('.') || name == "target" || name == "node_modules" { return None; }
-                        if e.path().is_dir() { Some(format!("{}/", name)) } else { Some(name.to_string()) }
-                    }).collect();
-                    sorted_entries.sort();
-                    lines.extend(sorted_entries);
-                    self.editor.lines = lines;
-                    self.editor.cursor.row = 0;
-                    self.editor.cursor.col = 0;
-                }
-            }
-        } else if path.is_file() {
-            let filename_str = path.to_string_lossy().to_string();
-            if let Err(e) = self.open_buffered_file(&filename_str) {
-                self.command_history.push((format!("Failed to open file: {}", e), false));
-            } else {
-                let full_text = self.editor.lines.join("\n");
-                let _ = self.lsp_client.open_file(&filename_str, &full_text);
-            }
-        }
-    }
-}
-
-struct Layout {
-    term_width: u16,
-    term_height: u16,
-    banner_height: usize,
-    term_pane_height: usize,
-    editor_height: usize,
-    debug_width: usize,
-    codespace_width: usize,
-    edit_pane_w: usize,
-}
-
-impl Layout {
-    fn compute(state: &AppState) -> Result<Self> {
-        let (term_width, term_height) = crossterm::terminal::size()?;
-        let banner_height = 1;
-        let status_height = 1;
-        let palette_height = 1;
-        let term_pane_height = if state.palette.is_active || state.show_ai_chat {
-            ((term_height as usize) * 35) / 100
-        } else {
-            0
-        };
-        let editor_height = (term_height as usize).saturating_sub(term_pane_height).saturating_sub(banner_height + status_height + palette_height);
-        let debug_width = if state.show_lsp_pane {
-            ((term_width as usize) * 25) / 100
-        } else {
-            0
-        };
-        let codespace_width = (term_width as usize).saturating_sub(debug_width);
-        let edit_pane_w = codespace_width.saturating_sub(9);
-        Ok(Self {
-            term_width,
-            term_height,
-            banner_height,
-            term_pane_height,
-            editor_height,
-            debug_width,
-            codespace_width,
-            edit_pane_w,
-        })
-    }
-}
-
-fn set_border_color(stdout: &mut Stdout, p: &ThemePalette) -> Result<()> {
-    stdout.execute(SetForegroundColor(p.border))?;
-    Ok(())
-}
-
-fn draw_frame(stdout: &mut Stdout, state: &AppState, layout: &Layout) -> Result<()> {
-    let p = palette_for(state.current_theme);
-    set_border_color(stdout, p)?;
-    stdout.execute(cursor::MoveTo(0, 0))?;
-    write!(stdout, "╭{}╮", "─".repeat(layout.term_width.saturating_sub(2) as usize))?;
-    let divider_x = layout.codespace_width.saturating_sub(1) as u16;
-    for i in 0..layout.editor_height {
-        let y = (layout.banner_height + i) as u16;
-        stdout.execute(cursor::MoveTo(0, y))?;
-        write!(stdout, "│")?;
-        if state.show_lsp_pane && layout.debug_width > 0 {
-            stdout.execute(cursor::MoveTo(divider_x, y))?;
-            write!(stdout, "│")?;
-        }
-        stdout.execute(cursor::MoveTo(layout.term_width - 1, y))?;
-        write!(stdout, "│")?;
-    }
-    let status_y = (layout.banner_height + layout.editor_height) as u16;
-    stdout.execute(cursor::MoveTo(0, status_y))?;
-    write!(stdout, "├{}┤", "─".repeat(layout.term_width.saturating_sub(2) as usize))?;
-    for i in 0..layout.term_pane_height {
-        let y = status_y + 1 + i as u16;
-        stdout.execute(cursor::MoveTo(0, y))?;
-        write!(stdout, "│")?;
-        stdout.execute(cursor::MoveTo(layout.term_width - 1, y))?;
-        write!(stdout, "│")?;
-    }
-    let bottom_y = layout.term_height.saturating_sub(1);
-    stdout.execute(cursor::MoveTo(0, bottom_y))?;
-    write!(stdout, "╰{}╯", "─".repeat(layout.term_width.saturating_sub(2) as usize))?;
-    if state.show_lsp_pane && layout.debug_width > 0 {
-        stdout.execute(cursor::MoveTo(divider_x, 0))?;
-        write!(stdout, "┬")?;
-        stdout.execute(cursor::MoveTo(divider_x, status_y))?;
-        write!(stdout, "┴")?;
-    }
-    stdout.execute(ResetColor)?;
-    Ok(())
-}
-
-fn render_ui(stdout: &mut Stdout, state: &mut AppState, layout: &Layout) -> Result<()> {
-    let p = palette_for(state.current_theme);
-    stdout.execute(cursor::Hide)?;
-    stdout.execute(SetBackgroundColor(p.bg_main))?;
-    stdout.execute(Clear(ClearType::All))?;
-    draw_frame(stdout, state, layout)?;
-    draw_banner(stdout, state, layout)?;
-    draw_editor(stdout, state, layout)?;
-    draw_lsp_pane(stdout, state, layout)?;
-    draw_status_bar(stdout, state, layout)?;
-    if state.palette.is_active && layout.term_pane_height > 0 {
-        draw_terminal_pane(stdout, state, layout)?;
-    } else if state.show_ai_chat && layout.term_pane_height > 0 {
-        draw_ai_chat_pane(stdout, state, layout)?;
-    }
-    draw_command_palette(stdout, state, layout)?;
-    draw_symbol_finder_modal(stdout, state, layout)?;
-    sync_cursor(stdout, state, layout)?;
-    stdout.execute(cursor::Show)?;
-    stdout.flush()?;
-    Ok(())
-}
-
-fn draw_banner(stdout: &mut Stdout, state: &AppState, _layout: &Layout) -> Result<()> {
-    let p = palette_for(state.current_theme);
-    stdout.execute(cursor::MoveTo(2, 0))?;
-    stdout.execute(SetForegroundColor(p.function))?;
-    write!(stdout, " Your shortcut to an Easier Life (Theme: {:?})", state.current_theme)?;
-    stdout.execute(ResetColor)?;
-    Ok(())
-}
-
-fn draw_editor(stdout: &mut Stdout, state: &AppState, layout: &Layout) -> Result<()> {
-    let p = palette_for(state.current_theme);
-    for i in 0..layout.editor_height {
-        let row = state.editor.row_offset + i;
-        let screen_y = (layout.banner_height + i) as u16;
-        stdout.execute(cursor::MoveTo(2, screen_y))?;
-        if row < state.editor.lines.len() {
-            let line = &state.editor.lines[row];
-            let display_line: String = line.chars().skip(state.editor.col_offset).take(layout.edit_pane_w).collect();
-            stdout.execute(SetForegroundColor(p.comment))?;
-            write!(stdout, "{:3}", row + 1)?;
-            set_border_color(stdout, p)?;
-            write!(stdout, "│ ")?;
-            let trimmed = line.trim();
-            let is_function_header = trimmed.starts_with("fn ") || trimmed.starts_with("pub fn ") || trimmed.starts_with("async fn ") || trimmed.starts_with("pub async fn ");
-            if is_function_header {
-                stdout.execute(SetForegroundColor(p.accent))?;
-                write!(stdout, "{}", display_line)?;
-                stdout.execute(ResetColor)?;
-            } else {
-                let mut in_string = false;
-                let mut in_comment = false;
-                let mut word = String::new();
-                let chars: Vec<char> = display_line.chars().collect();
-                for char_idx in 0..chars.len() {
-                    let c = chars[char_idx];
-                    let next_c = chars.get(char_idx + 1).copied();
-                    if in_comment {
-                        stdout.execute(SetForegroundColor(p.comment))?;
-                        write!(stdout, "{}", c)?;
-                    } else if in_string {
-                        stdout.execute(SetForegroundColor(p.string))?;
-                        write!(stdout, "{}", c)?;
-                        if c == '"' { in_string = false; }
-                    } else if c == '/' && next_c == Some('/') {
-                        let _ = flush_token(stdout, &mut word, Some('/'), p);
-                        in_comment = true;
-                        stdout.execute(SetForegroundColor(p.comment))?;
-                        write!(stdout, "{}", c)?;
-                    } else if c == '"' {
-                        let _ = flush_token(stdout, &mut word, Some('"'), p);
-                        in_string = true;
-                        stdout.execute(SetForegroundColor(p.string))?;
-                        write!(stdout, "{}", c)?;
-                    } else if c.is_alphanumeric() || c == '_' {
-                        word.push(c);
-                    } else {
-                        let _ = flush_token(stdout, &mut word, Some(c), p);
-                        stdout.execute(SetForegroundColor(p.text))?;
-                        write!(stdout, "{}", c)?;
-                    }
-                }
-                let _ = flush_token(stdout, &mut word, None, p);
-                stdout.execute(ResetColor)?;
-            }
-        } else {
-            stdout.execute(SetForegroundColor(p.comment))?;
-            write!(stdout, "")?;
-            set_border_color(stdout, p)?;
-            write!(stdout, "│ ")?;
-            stdout.execute(SetForegroundColor(p.comment))?;
-            write!(stdout, "~")?;
-            stdout.execute(ResetColor)?;
-        }
-    }
-    Ok(())
-}
-
-fn draw_lsp_pane(stdout: &mut Stdout, state: &mut AppState, layout: &Layout) -> Result<()> {
-    if !state.show_lsp_pane || layout.debug_width == 0 { return Ok(()); }
-    let p = palette_for(state.current_theme);
-    let divider_x = layout.codespace_width.saturating_sub(1) as u16;
-    let debug_x = divider_x + 1;
-    for i in 0..layout.editor_height {
-        let y = (layout.banner_height + i) as u16;
-        stdout.execute(cursor::MoveTo(debug_x, y))?;
-        stdout.execute(SetBackgroundColor(p.bg_panel))?;
-        write!(stdout, "{}", " ".repeat(layout.debug_width - 1))?;
-        stdout.execute(SetBackgroundColor(p.bg_main))?;
-    }
-    stdout.execute(cursor::MoveTo(debug_x + 1, 1))?;
-    stdout.execute(SetBackgroundColor(p.bg_panel))?;
-    stdout.execute(SetForegroundColor(p.hint))?;
-    write!(stdout, "LSP Workspace")?;
-    stdout.execute(ResetColor)?;
-    if state.current_diagnostics.is_empty() {
-        stdout.execute(cursor::MoveTo(debug_x + 1, 3))?;
-        stdout.execute(SetBackgroundColor(p.bg_panel))?;
-        stdout.execute(SetForegroundColor(p.success))?;
-        write!(stdout, "Nominal")?;
-        stdout.execute(ResetColor)?;
-    } else {
-        let mut wrapped_lines = Vec::new();
-        let text_width = layout.debug_width.saturating_sub(4);
-        if text_width > 0 {
-            let mut sorted_uris: Vec<_> = state.current_diagnostics.keys().collect();
-            sorted_uris.sort();
-            for uri in sorted_uris {
-                let diags = &state.current_diagnostics[uri];
-                let filename = uri.rsplit('/').next().unwrap_or("?");
-                for diag in diags {
-                    let status = match diag.severity {
-                        Some(1) => colors::Status::Error,
-                        Some(2) => colors::Status::Warning,
-                        Some(3) | Some(4) => colors::Status::Hint,
-                        _ => {
-                            let msg_lower = diag.message.to_lowercase();
-                            if msg_lower.contains("error") { colors::Status::Error }
-                            else if msg_lower.contains("warn") { colors::Status::Warning }
-                            else if msg_lower.contains("hint") || msg_lower.contains("info") { colors::Status::Hint }
-                            else { colors::Status::Error }
-                        }
-                    };
-                    let full_msg = format!("{}:L{}: {}", filename, diag.line, diag.message);
-                    for chunk in full_msg.chars().collect::<Vec<_>>().chunks(text_width) {
-                        wrapped_lines.push((chunk.iter().collect::<String>(), status));
-                    }
-                    wrapped_lines.push((String::new(), status));
-                }
-            }
-        }
-        let max_display_lines = layout.editor_height.saturating_sub(3);
-        let max_scroll = wrapped_lines.len().saturating_sub(max_display_lines);
-        state.lsp_scroll_offset = state.lsp_scroll_offset.min(max_scroll);
-        for (idx, (line, status)) in wrapped_lines.iter().skip(state.lsp_scroll_offset).take(max_display_lines).enumerate() {
-            stdout.execute(cursor::MoveTo(debug_x + 1, 3 + idx as u16))?;
-            stdout.execute(SetBackgroundColor(p.bg_panel))?;
-            if !line.is_empty() {
-               stdout.execute(SetAttribute(colors::attribute_for_status(*status)))?;
-stdout.execute(SetForegroundColor(colors::color_for_status_in(state.current_theme, *status)))?;
-                write!(stdout, "{}", line)?;
-                stdout.execute(SetAttribute(Attribute::Reset))?;
-                stdout.execute(ResetColor)?;
-            }
-        }
-    }
-    Ok(())
-}
-
-fn draw_status_bar(stdout: &mut Stdout, state: &AppState, layout: &Layout) -> Result<()> {
-    let p = palette_for(state.current_theme);
-    let status_row = (layout.banner_height + layout.editor_height) as u16;
-    stdout.execute(cursor::MoveTo(2, status_row))?;
-    let dirty_flag = if state.editor.is_dirty { " [+] " } else { "" };
-    let status = format!(
-        "{}{} | R:{} C:{} | {} ({}) ",
-        state.editor.filename.as_deref().unwrap_or("[Workspace]"),
-        dirty_flag,
-        state.editor.cursor.row + 1,
-        state.editor.cursor.col + 1,
-        state.lsp_client.server_name.as_str(),
-        state.lsp_client.language_id.as_str(),
-    );
-    stdout.execute(SetForegroundColor(p.text))?;
-    write!(stdout, "{}", status)?;
-    stdout.execute(ResetColor)?;
-    Ok(())
-}
-
-fn draw_terminal_pane(stdout: &mut Stdout, state: &AppState, layout: &Layout) -> Result<()> {
-    let p = palette_for(state.current_theme);
-    let status_row = (layout.banner_height + layout.editor_height) as u16;
-    let term_start_row = status_row + 1;
-    for i in 0..layout.term_pane_height {
-        let y = term_start_row + i as u16;
-        stdout.execute(cursor::MoveTo(1, y))?;
-        stdout.execute(SetBackgroundColor(p.bg_panel))?;
-        write!(stdout, "{}", " ".repeat(layout.term_width.saturating_sub(2) as usize))?;
-    }
-    let mut display_history = Vec::new();
-    for (msg, success) in &state.command_history {
-        for line in msg.lines() {
-            display_history.push((line.to_string(), *success));
-        }
-    }
-    let term_output_height = layout.term_pane_height;
-    let max_scroll_y = display_history.len().saturating_sub(term_output_height);
-    let current_scroll_y = state.term_scroll_y.min(max_scroll_y);
-    let start_idx = display_history.len().saturating_sub(term_output_height).saturating_sub(current_scroll_y);
-    let max_width = layout.term_width.saturating_sub(4) as usize;
-    for (idx, (line, success)) in display_history.iter().skip(start_idx).take(term_output_height).enumerate() {
-        stdout.execute(cursor::MoveTo(2, term_start_row + idx as u16))?;
-        let status_type = if *success {
-            colors::Status::Success
-        } else if line.starts_with("Unknown") {
-            colors::Status::UnknownCommand
-        } else if line.starts_with("Code") {
-            colors::Status::UnknownCode
-        } else if line.contains("warn") || line.contains("Warning") {
-            colors::Status::Warning
-        } else if line.contains("hint") || line.contains("Hint") {
-            colors::Status::Hint
-        } else {
-            colors::Status::Error
-        };
-        let chars: Vec<char> = line.chars().collect();
-        let display_str: String = if state.term_scroll_x < chars.len() {
-            chars.into_iter().skip(state.term_scroll_x).take(max_width).collect()
-        } else {
-            String::new()
-        };
-        stdout.execute(SetBackgroundColor(p.bg_panel))?;
-        stdout.execute(SetAttribute(colors::attribute_for_status(status_type)))?;
-        stdout.execute(SetForegroundColor(colors::color_for_status_in(state.current_theme, status_type)))?;
-        write!(stdout, "{}", display_str)?;
-        stdout.execute(SetAttribute(Attribute::Reset))?;
-        stdout.execute(ResetColor)?;
-    }
-    Ok(())
-}
-
-fn draw_ai_chat_pane(stdout: &mut Stdout, state: &AppState, layout: &Layout) -> Result<()> {
-    let p = palette_for(state.current_theme);
-    let status_row = (layout.banner_height + layout.editor_height) as u16;
-    let term_start_row = status_row + 1;
-
-    for i in 0..layout.term_pane_height {
-        let y = term_start_row + i as u16;
-        stdout.execute(cursor::MoveTo(1, y))?;
-        stdout.execute(SetBackgroundColor(p.bg_panel))?;
-        write!(stdout, "{}", " ".repeat(layout.term_width.saturating_sub(2) as usize))?;
-    }
-
-    stdout.execute(cursor::MoveTo(2, term_start_row))?;
-    stdout.execute(SetBackgroundColor(p.bg_panel))?;
-    stdout.execute(SetForegroundColor(p.function))?;
-    write!(stdout, "💬 ELIDE AI Auditor Chat (Ctrl+A to close)")?;
-    stdout.execute(ResetColor)?;
-
-    let max_display_lines = layout.term_pane_height.saturating_sub(2);
-    let mut display_lines = Vec::new();
-
-    for (role, msg) in &state.ai_messages {
-        let prefix = if role == "user" { "You: " } else { "ELIDE: " };
-        for line in msg.lines() {
-            display_lines.push(format!("{}{}", prefix, line));
-        }
-    }
-
-    display_lines.push(format!("> {}", state.ai_input_buffer));
-
-    let max_scroll = display_lines.len().saturating_sub(max_display_lines);
-    let scroll = state.ai_scroll_offset.min(max_scroll);
-    let max_width = layout.term_width.saturating_sub(4) as usize;
-
-    for (idx, line) in display_lines.iter().skip(scroll).take(max_display_lines).enumerate() {
-        stdout.execute(cursor::MoveTo(2, term_start_row + 1 + idx as u16))?;
-        stdout.execute(SetBackgroundColor(p.bg_panel))?;
-        
-        let chars: Vec<char> = line.chars().collect();
-        let display_str: String = if chars.len() > max_width {
-            chars.into_iter().take(max_width).collect()
-        } else {
-            line.clone()
-        };
-
-        if line.starts_with("ELIDE:") {
-            stdout.execute(SetForegroundColor(p.string))?;
-        } else if line.starts_with("You:") {
-            stdout.execute(SetForegroundColor(p.type_color))?;
-        } else {
-            stdout.execute(SetForegroundColor(p.text))?;
-        }
-
-        write!(stdout, "{}", display_str)?;
-        stdout.execute(ResetColor)?;
-    }
-
-    Ok(())
-}
-
-fn draw_command_palette(stdout: &mut Stdout, state: &AppState, layout: &Layout) -> Result<()> {
-    let p = palette_for(state.current_theme);
-    let bottom_y = layout.term_height.saturating_sub(1);
-    stdout.execute(cursor::MoveTo(2, bottom_y))?;
-    if state.palette.is_active {
-        stdout.execute(SetForegroundColor(p.type_color))?;
-        write!(stdout, " : {}", state.palette.input_buffer)?;
-        stdout.execute(ResetColor)?;
-    } else {
-        stdout.execute(SetForegroundColor(p.comment))?;
-        write!(stdout, " : (Ctrl+A AI chat, Alt+T term, Alt+D symbols, Esc close) ")?;
-        stdout.execute(ResetColor)?;
-    }
-    Ok(())
-}
-
-fn draw_symbol_finder_modal(stdout: &mut Stdout, state: &AppState, layout: &Layout) -> Result<()> {
-    if !state.show_symbol_finder { return Ok(()); }
-    let p = palette_for(state.current_theme);
-    let modal_w = (layout.term_width as usize * 60) / 100;
-    let modal_h = 12;
-    let start_x = (layout.term_width as usize).saturating_sub(modal_w) / 2;
-    let start_y = (layout.term_height as usize).saturating_sub(modal_h) / 2;
-    set_border_color(stdout, p)?;
-    stdout.execute(cursor::MoveTo(start_x as u16, start_y as u16))?;
-    write!(stdout, "╭{}╮", "─".repeat(modal_w.saturating_sub(2)))?;
-    for i in 1..modal_h - 1 {
-        stdout.execute(cursor::MoveTo(start_x as u16, (start_y + i) as u16))?;
-        stdout.execute(SetBackgroundColor(p.bg_panel))?;
-        write!(stdout, "│{}│", " ".repeat(modal_w.saturating_sub(2)))?;
-    }
-    stdout.execute(cursor::MoveTo(start_x as u16, (start_y + modal_h - 1) as u16))?;
-    stdout.execute(SetBackgroundColor(p.bg_main))?;
-    write!(stdout, "╰{}╯", "─".repeat(modal_w.saturating_sub(2)))?;
-    stdout.execute(cursor::MoveTo((start_x + 2) as u16, (start_y + 1) as u16))?;
-    stdout.execute(SetBackgroundColor(p.bg_panel))?;
-    stdout.execute(SetForegroundColor(p.type_color))?;
-    write!(stdout, "🔍 Function: {}", state.symbol_query)?;
-    stdout.execute(cursor::MoveTo((start_x + 1) as u16, (start_y + 2) as u16))?;
-    set_border_color(stdout, p)?;
-    write!(stdout, "{}", "─".repeat(modal_w.saturating_sub(2)))?;
-    let matches = state.get_filtered_symbols();
-    let display_limit = modal_h.saturating_sub(4);
-    for (idx, (_, label)) in matches.iter().take(display_limit).enumerate() {
-        stdout.execute(cursor::MoveTo((start_x + 2) as u16, (start_y + 3 + idx) as u16))?;
-        stdout.execute(SetBackgroundColor(p.bg_panel))?;
-        if idx == state.symbol_selected_idx {
-            stdout.execute(SetForegroundColor(p.function))?;
-            write!(stdout, "► {:<width$}", label, width = modal_w.saturating_sub(5))?;
-        } else {
-            stdout.execute(SetForegroundColor(p.text))?;
-            write!(stdout, "{:<width$}", label, width = modal_w.saturating_sub(5))?;
-        }
-    }
-    stdout.execute(ResetColor)?;
-    Ok(())
-}
-
-fn sync_cursor(stdout: &mut Stdout, state: &AppState, layout: &Layout) -> Result<()> {
-    if state.palette.is_active {
-        let prompt_len = 3;
-        stdout.execute(cursor::MoveTo((2 + prompt_len + state.palette.input_buffer.len()) as u16, layout.term_height.saturating_sub(1)))?;
-    } else {
-        let screen_row = (state.editor.cursor.row.saturating_sub(state.editor.row_offset) + layout.banner_height) as u16;
-        let visual_col = state.editor.visual_cursor_col().saturating_sub(state.editor.col_offset);
-        let screen_col = (visual_col + 8).min(layout.codespace_width.saturating_sub(2)) as u16;
-        if (screen_row as usize) < (layout.banner_height + layout.editor_height) {
-            stdout.execute(cursor::MoveTo(screen_col, screen_row))?;
-        }
-    }
-    Ok(())
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let _guard = terminal::TerminalGuard::init()?;
-    let tracer = tracer::KernelTracer::init();
-    tracer.log_event("ELIDE v2.4.0 Initialized!");
+    let _terminal_guard = TerminalGuard::init()?;
+    let tracer = KernelTracer::init();
+    tracer.log_event("ELIDE session started with Git integration.");
 
-    let mut stdout = stdout();
+    let backend = CrosstermBackend::new(stdout());
+    let mut terminal = Terminal::new(backend)?;
+
     let mut state = AppState::new();
-    let (diag_tx, mut diag_rx) = mpsc::unbounded_channel::<(String, Vec<diagnostics::Diagnostic>)>();
+    let (diag_tx, mut diag_rx) = mpsc::unbounded_channel::<(String, Vec<Diagnostic>)>();
 
-    if let Some(arg) = std::env::args().nth(1) {
-        let path = Path::new(&arg);
-        if path.is_dir() {
-            let canonical_dir = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-            let _ = std::env::set_current_dir(&canonical_dir);
-            if let Ok(entries) = std::fs::read_dir(&canonical_dir) {
-                let mut lines = vec![
-                    format!(" Workspace: {}", canonical_dir.display()),
-                    " ──────────────────────────────────────────".to_string(),
-                    " ../".to_string(),
-                ];
-                let mut sorted_entries: Vec<String> = entries.flatten().filter_map(|e| {
-                    let name = e.file_name().to_string_lossy().to_string();
-                    if name.starts_with('.') || name == "target" || name == "node_modules" { return None; }
-                    if e.path().is_dir() { Some(format!("{}/", name)) } else { Some(name.to_string()) }
-                }).collect();
-                sorted_entries.sort();
-                lines.extend(sorted_entries);
-                state.editor.lines = lines;
-                state.editor.filename = None;
-            }
-        } else if path.is_file() {
-            if let Ok(content) = std::fs::read_to_string(path) {
-                state.editor.lines = content.lines().map(String::from).collect();
-                if state.editor.lines.is_empty() {
-                    state.editor.lines.push(String::new());
-                }
-                let canonical_arg = AppState::normalize_path(&arg);
-                state.editor.filename = Some(canonical_arg.clone());
-                state.buffer_cache.insert(canonical_arg, state.editor.lines.clone());
-            }
-        }
-    }
-
-    let mut needs_redraw = true;
     loop {
-        if state.should_exit { break; }
+        let p = palette_for(state.current_theme);
+        let bg_main = to_ratatui_color(p.bg_main);
+        let bg_panel = to_ratatui_color(p.bg_panel);
+        let border_col = to_ratatui_color(p.border);
+        let text_col = to_ratatui_color(p.text);
+        let comment_col = to_ratatui_color(p.comment);
+        let func_col = to_ratatui_color(p.function);
+        let success_col = to_ratatui_color(p.success);
+        let error_col = to_ratatui_color(p.error);
+        let warning_col = to_ratatui_color(p.warning);
+        let hint_col = to_ratatui_color(p.hint);
+        let accent_col = to_ratatui_color(p.accent);
+        let type_col = to_ratatui_color(p.type_color);
+
+        terminal.draw(|f| {
+            let size = f.area();
+
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(1), // Top Banner
+                    Constraint::Min(10),   // Code Editor Workspace
+                    Constraint::Length(if state.palette.is_active || state.show_ai_chat { 12 } else { 1 }), // Terminal/Status Pane
+                    Constraint::Length(1), // Command Prompt Bar
+                ])
+                .split(size);
+
+            let banner_p = Paragraph::new(Span::styled(
+                format!(" ELIDE v2.4.0 — Theme: {:?}", state.current_theme),
+                Style::default().fg(func_col).bg(bg_main)
+            ));
+            f.render_widget(banner_p, chunks[0]);
+
+            let workspace_chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Percentage(if state.show_lsp_pane { 75 } else { 100 }),
+                    Constraint::Percentage(if state.show_lsp_pane { 25 } else { 0 }),
+                ])
+                .split(chunks[1]);
+
+            let editor_height = workspace_chunks[0].height.saturating_sub(2) as usize;
+            let editor_width = workspace_chunks[0].width.saturating_sub(10) as usize;
+
+            let visible_lines = state.editor.render_visible_lines(editor_width, editor_height, text_col, comment_col);
+
+            let editor_block = Paragraph::new(visible_lines)
+                .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(border_col)).title(" Editor "))
+                .style(Style::default().bg(bg_panel));
+            f.render_widget(editor_block, workspace_chunks[0]);
+
+            if !state.palette.is_active && !state.show_ai_chat && !state.show_symbol_finder {
+                let cursor_row = workspace_chunks[0].y + 1 + (state.editor.cursor.row.saturating_sub(state.editor.row_offset)) as u16;
+                let visual_col = state.editor.visual_cursor_col().saturating_sub(state.editor.col_offset);
+                let cursor_col = workspace_chunks[0].x + 7 + visual_col as u16;
+                if cursor_row < workspace_chunks[0].y + workspace_chunks[0].height - 1 {
+                    f.set_cursor_position(Position::new(cursor_col, cursor_row));
+                }
+            }
+
+            if state.show_lsp_pane {
+                let lsp_lines: Vec<Line> = if state.current_diagnostics.is_empty() {
+                    vec![Line::from(Span::styled("Nominal (No Diagnostics)", Style::default().fg(success_col)))]
+                } else {
+                    state.current_diagnostics.iter().flat_map(|(uri, diags)| {
+                        let filename = uri.rsplit('/').next().unwrap_or(uri);
+                        diags.iter().map(move |d| {
+                            let diag_color = match d.severity {
+                                Some(1) => error_col,
+                                Some(2) => warning_col,
+                                _ => hint_col,
+                            };
+                            Line::from(Span::styled(format!("{}:L{}: {}", filename, d.line, d.message), Style::default().fg(diag_color)))
+                        })
+                    }).collect()
+                };
+                let lsp_block = Paragraph::new(lsp_lines)
+                    .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(border_col)).title(" LSP Workspace "))
+                    .style(Style::default().bg(bg_panel));
+                f.render_widget(lsp_block, workspace_chunks[1]);
+            }
+
+            if state.palette.is_active {
+                let term_lines: Vec<Line> = state.command_history.iter().map(|(msg, _)| Line::from(msg.clone())).collect();
+                let term_block = Paragraph::new(term_lines)
+                    .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(accent_col)).title(" Terminal Output "))
+                    .style(Style::default().bg(bg_panel));
+                f.render_widget(term_block, chunks[2]);
+            } else if state.show_ai_chat {
+                let ai_lines: Vec<Line> = state.ai_messages.iter().map(|(role, msg)| {
+                    Line::from(format!("{}: {}", role, msg))
+                }).collect();
+                let ai_block = Paragraph::new(ai_lines)
+                    .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(hint_col)).title(" AI Auditor Chat "))
+                    .style(Style::default().bg(bg_panel));
+                f.render_widget(ai_block, chunks[2]);
+            } else {
+                let file_status = if let Some((_, success)) = state.command_history.last() {
+                    if !success {
+                        colors::Status::Error
+                    } else if state.editor.is_dirty {
+                        colors::Status::Modified
+                    } else {
+                        colors::Status::Saved
+                    }
+                } else if state.editor.is_dirty {
+                    colors::Status::Modified
+                } else {
+                    colors::Status::Saved
+                };
+                let status_color = to_ratatui_color(colors::color_for_status_in(state.current_theme, file_status));
+
+                let is_bold = matches!(colors::attribute_for_status(file_status), crossterm::style::Attribute::Bold);
+                let mut status_style = Style::default().fg(status_color);
+                if is_bold {
+                    status_style = status_style.add_modifier(Modifier::BOLD);
+                }
+
+                let status_text = vec![
+                    Span::styled(format!(" File: {} ", state.editor.filename.as_deref().unwrap_or("[No File]")), Style::default().fg(text_col)),
+                    Span::styled(format!(" [{:?}] ", file_status), status_style),
+                    Span::styled(format!("| R:{} C:{} ", state.editor.cursor.row + 1, state.editor.cursor.col + 1), Style::default().fg(text_col)),
+                ];
+                let status_p = Paragraph::new(Line::from(status_text));
+                f.render_widget(status_p, chunks[2]);
+            }
+
+            let prompt_str = if state.palette.is_active {
+                format!(" : {}", state.palette.input_buffer)
+            } else {
+                format!(" : (Ctrl+A AI, Alt+T Term, Alt+D Symbols) [{:?}]", state.current_theme)
+            };
+            let cmd_p = Paragraph::new(prompt_str).style(Style::default().fg(type_col));
+            f.render_widget(cmd_p, chunks[3]);
+
+            if state.show_symbol_finder {
+                let area = centered_rect(60, 40, size);
+                f.render_widget(Clear, area);
+                let matches = state.get_filtered_symbols();
+                let match_lines: Vec<Line> = matches.iter().map(|(_, l)| Line::from(l.clone())).collect();
+                let modal = Paragraph::new(match_lines)
+                    .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(accent_col)).title(" 🔍 Function Symbol Finder "))
+                    .style(Style::default().bg(bg_panel));
+                f.render_widget(modal, area);
+            }
+        })?;
 
         while let Ok((uri, diags)) = diag_rx.try_recv() {
             if diags.is_empty() {
@@ -1100,68 +531,42 @@ async fn main() -> Result<()> {
             } else {
                 state.current_diagnostics.insert(uri, diags);
             }
-            needs_redraw = true;
         }
 
-        if needs_redraw {
-            let layout = Layout::compute(&state)?;
-            state.editor.scroll_into_view(layout.edit_pane_w, layout.editor_height);
-            render_ui(&mut stdout, &mut state, &layout)?;
-            needs_redraw = false;
-        }
-
-        match terminal::poll_event(Duration::from_millis(16))? {
-            InputEvent::Key(key) => {
-                needs_redraw = true;
+        if event::poll(Duration::from_millis(16))? {
+            if let Event::Key(key) = event::read()? {
                 if !state.handle_input(key, &diag_tx).await {
+                    tracer.log_event("Exit requested via key handler.");
                     break;
                 }
             }
-            InputEvent::Paste(text) => {
-                needs_redraw = true;
-                if state.palette.is_active {
-                    state.palette.input_buffer.push_str(&text);
-                } else if state.show_ai_chat {
-                    state.ai_input_buffer.push_str(&text);
-                } else if state.editor.filename.is_some() {
-                    for c in text.chars() {
-                        if c == '\n' {
-                            state.editor.insert_newline();
-                        } else if c != '\r' {
-                            state.editor.insert_char(c);
-                        }
-                    }
-                }
-            }
-            InputEvent::ScrollUp => {
-                needs_redraw = true;
-                if state.palette.is_active {
-                    state.term_scroll_y = state.term_scroll_y.saturating_add(3);
-                } else if state.show_ai_chat {
-                    state.ai_scroll_offset = state.ai_scroll_offset.saturating_add(3);
-                } else if state.show_lsp_pane {
-                    state.lsp_scroll_offset = state.lsp_scroll_offset.saturating_sub(3);
-                } else {
-                    state.editor.move_cursor(-3, 0);
-                }
-            }
-            InputEvent::ScrollDown => {
-                needs_redraw = true;
-                if state.palette.is_active {
-                    state.term_scroll_y = state.term_scroll_y.saturating_sub(3);
-                } else if state.show_ai_chat {
-                    state.ai_scroll_offset = state.ai_scroll_offset.saturating_sub(3);
-                } else if state.show_lsp_pane {
-                    state.lsp_scroll_offset = state.lsp_scroll_offset.saturating_add(3);
-                } else {
-                    state.editor.move_cursor(3, 0);
-                }
-            }
-            InputEvent::Resize => {
-                needs_redraw = true;
-            }
-            InputEvent::Tick => {}
+        }
+
+        if state.should_exit {
+            tracer.log_event("Exit requested via state flag.");
+            break;
         }
     }
+
     Ok(())
+}
+
+fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(r);
+
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(popup_layout[1])[1]
 }

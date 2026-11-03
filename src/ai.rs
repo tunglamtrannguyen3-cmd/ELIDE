@@ -7,6 +7,10 @@ use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
+// ==========================================
+// 1. CONFIGURATION STRUCT & STATE MANAGEMENT
+// ==========================================
+
 pub struct AiConfig {
     pub api_key: String,
     pub api_url: String,
@@ -50,6 +54,10 @@ fn get_http_client() -> &'static reqwest::Client {
     })
 }
 
+// ==========================================
+// 2. DATA STRUCTURES
+// ==========================================
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ChatMessage {
     pub role: String,
@@ -76,77 +84,64 @@ pub struct ChatResponse {
     pub choices: Vec<ChatChoice>,
 }
 
-pub async fn run_chat_stream(
-    workspace_root: &Path,
-    messages: Vec<(String, String)>,
-) -> Result<String, String> {
-    // 1. Check if the latest user message is a command
-    if let Some((role, content)) = messages.last() {
-        let input_trimmed = content.trim();
-        if role == "user" {
-            // Command: Update connection (<token> <url> [model])
-            if input_trimmed.contains("http://") || input_trimmed.contains("https://") {
-                let parts: Vec<&str> = input_trimmed.split_whitespace().collect();
-                if parts.len() >= 2 {
-                    let mut config = get_config().lock().map_err(|e| format!("Lock error: {}", e))?;
-                    config.api_key = parts[0].to_string();
-                    config.api_url = parts[1].to_string();
+// ==========================================
+// 3. COMMAND PARSING & CONFIGURATION HELPERS
+// ==========================================
 
-                    if parts.len() >= 3 {
-                        config.model = parts[2].to_string();
-                    }
+fn try_handle_command(input_trimmed: &str) -> Result<Option<String>, String> {
+    // Connection command (<token> <url> [model])
+    if input_trimmed.contains("http://") || input_trimmed.contains("https://") {
+        let parts: Vec<&str> = input_trimmed.split_whitespace().collect();
+        if parts.len() >= 2 {
+            let mut config = get_config().lock().map_err(|e| format!("Lock error: {}", e))?;
+            config.api_key = parts[0].to_string();
+            config.api_url = parts[1].to_string();
 
-                    return Ok(format!(
-                        "🔑 Connection saved successfully!\nEndpoint: {}\nModel: {}\n\nYou can now run prompts to audit your workspace.",
-                        config.api_url, config.model
-                    ));
-                } else {
-                    return Err("Usage for connection: <token> <url> [model]".to_string());
-                }
+            if parts.len() >= 3 {
+                config.model = parts[2].to_string();
             }
 
-            // Command: Update system prompt (`prompt: <new prompt text>`)
-            if let Some(new_prompt) = input_trimmed.strip_prefix("prompt:") {
-                let mut config = get_config().lock().map_err(|e| format!("Lock error: {}", e))?;
-                config.system_prompt = new_prompt.trim().to_string();
-                return Ok(format!(
-                    "✨ System prompt updated successfully!\nNew Prompt:\n{}",
-                    config.system_prompt
-                ));
-            }
-
-            // Command: Update character limit (`limit: <number>`)
-            if let Some(limit_str) = input_trimmed.strip_prefix("limit:") {
-                if let Ok(new_limit) = limit_str.trim().parse::<usize>() {
-                    let mut config = get_config().lock().map_err(|e| format!("Lock error: {}", e))?;
-                    config.max_context_chars = new_limit;
-                    return Ok(format!(
-                        "📊 Workspace context limit updated successfully!\nNew Character Limit: {} chars",
-                        config.max_context_chars
-                    ));
-                } else {
-                    return Err("Usage for limit: limit: <number_of_characters> (e.g. limit: 150000)".to_string());
-                }
-            }
+            return Ok(Some(format!(
+                "🔑 Connection saved successfully!\nEndpoint: {}\nModel: {}\n\nYou can now run prompts to audit your workspace.",
+                config.api_url, config.model
+            )));
+        } else {
+            return Err("Usage for connection: <token> <url> [model]".to_string());
         }
     }
 
-    // 2. Read configuration
-    let (api_key, api_url, model, system_prompt, max_context_chars) = {
-        let config = get_config().lock().map_err(|e| format!("Lock error: {}", e))?;
-        if config.api_key.is_empty() && !config.api_url.contains("localhost") {
-            return Err("❌ AI Not Connected!\nPlease configure your credentials first using:\n<token> <url> [model]\n\nCommands:\n• prompt: <new system prompt>\n• limit: <max characters>".to_string());
-        }
-        (
-            config.api_key.clone(),
-            config.api_url.clone(),
-            config.model.clone(),
-            config.system_prompt.clone(),
-            config.max_context_chars,
-        )
-    };
+    // System prompt command (`prompt: <new prompt text>`)
+    if let Some(new_prompt) = input_trimmed.strip_prefix("prompt:") {
+        let mut config = get_config().lock().map_err(|e| format!("Lock error: {}", e))?;
+        config.system_prompt = new_prompt.trim().to_string();
+        return Ok(Some(format!(
+            "✨ System prompt updated successfully!\nNew Prompt:\n{}",
+            config.system_prompt
+        )));
+    }
 
-    // 3. Gather workspace files safely with dynamic length clamping
+    // Character limit command (`limit: <number>`)
+    if let Some(limit_str) = input_trimmed.strip_prefix("limit:") {
+        if let Ok(new_limit) = limit_str.trim().parse::<usize>() {
+            let mut config = get_config().lock().map_err(|e| format!("Lock error: {}", e))?;
+            config.max_context_chars = new_limit;
+            return Ok(Some(format!(
+                "📊 Workspace context limit updated successfully!\nNew Character Limit: {} chars",
+                config.max_context_chars
+            )));
+        } else {
+            return Err("Usage for limit: limit: <number_of_characters> (e.g. limit: 150000)".to_string());
+        }
+    }
+
+    Ok(None)
+}
+
+// ==========================================
+// 4. WORKSPACE SCANNING & CONTEXT GATHERING
+// ==========================================
+
+fn gather_workspace_context(workspace_root: &Path, max_chars: usize) -> String {
     let mut code_context = String::new();
     let walker = WalkBuilder::new(workspace_root)
         .hidden(true)
@@ -166,15 +161,53 @@ pub async fn run_chat_stream(
                     rel_path, content
                 ));
 
-                if code_context.len() > 600000 {
+                if code_context.len() > max_chars {
                     code_context.push_str("\n[Context truncated due to size limits...]\n");
                     break;
                 }
             }
         }
     }
+    code_context
+}
 
-    // 4. Build API messages array
+// ==========================================
+// 5. MAIN CHAT STREAM & EXECUTION
+// ==========================================
+
+pub async fn run_chat_stream(
+    workspace_root: &Path,
+    messages: Vec<(String, String)>,
+) -> Result<String, String> {
+    // Check if the latest message is a configuration command
+    if let Some((role, content)) = messages.last() {
+        let input_trimmed = content.trim();
+        if role == "user" {
+            if let Some(response) = try_handle_command(input_trimmed)? {
+                return Ok(response);
+            }
+        }
+    }
+
+    // Read current config state
+    let (api_key, api_url, model, system_prompt, max_context_chars) = {
+        let config = get_config().lock().map_err(|e| format!("Lock error: {}", e))?;
+        if config.api_key.is_empty() && !config.api_url.contains("localhost") {
+            return Err("❌ AI Not Connected!\nPlease configure your credentials first using:\n<token> <url> [model]\n\nCommands:\n• prompt: <new system prompt>\n• limit: <max characters>".to_string());
+        }
+        (
+            config.api_key.clone(),
+            config.api_url.clone(),
+            config.model.clone(),
+            config.system_prompt.clone(),
+            config.max_context_chars,
+        )
+    };
+
+    // Gather workspace files context
+    let code_context = gather_workspace_context(workspace_root, max_context_chars);
+
+    // Build API messages payload
     let mut api_messages = vec![ChatMessage {
         role: "system".to_string(),
         content: system_prompt,
@@ -197,7 +230,7 @@ pub async fn run_chat_stream(
         });
     }
 
-// 5. Build and send HTTP request
+    // Build and send HTTP request to LLM endpoint
     let payload = ChatRequest {
         model,
         messages: api_messages,
