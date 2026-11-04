@@ -1,7 +1,6 @@
 // src/palette.rs
-use crate::editor::Editor;
+use crate::editor::{Editor, SystemClipboard};
 use crate::process;
-use crate::clipboard::SystemClipboard;
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum PaletteAction {
@@ -32,7 +31,7 @@ pub enum PaletteAction {
     // Git Integration Actions
     GitStatus,
     GitInitRepo,
-    GitChooseRepo,
+    GitChooseRepo(Option<String>),
     GitLogin,
     GitCommit { message: String, branch: String },
 }
@@ -99,7 +98,8 @@ impl Palette {
                 }
                 "choose" => {
                     if tokens.get(1).map(|s| s.as_str()) == Some("repo") {
-                        PaletteAction::GitChooseRepo
+                        let repo_name = tokens.get(2).cloned();
+                        PaletteAction::GitChooseRepo(repo_name)
                     } else {
                         PaletteAction::UnknownCommand(trimmed.to_string())
                     }
@@ -258,9 +258,10 @@ impl Palette {
             }
             PaletteAction::SaveAll 
             | PaletteAction::Quit 
-            | PaletteAction::SaveAndQuit 
-            | PaletteAction::CopyTerm 
-            | PaletteAction::CopyLsp => {
+            | PaletteAction::SaveAndQuit => {
+                ("Handled".to_string(), true)
+            }
+            PaletteAction::CopyTerm | PaletteAction::CopyLsp => {
                 ("Handled".to_string(), true)
             }
             PaletteAction::Copy(range_opt) => {
@@ -338,7 +339,7 @@ impl Palette {
                      ℹ️ [ABOUT AUTHOR]\n\
 - Author        : Eggchese\n\
 - Email         : (tunglamtrannguyen3@gmail.com)\n\
-- Favorite Idol : Yatsuzume, All Minecraft Manhunt Speedruners\n\
+- Favorite Idol : Yatsuzume, All Minecraft Manhunt Speedrunners\n\
 - Skills        : Systems Programming, Rust, C, Ada, Micro-skills, Cooking, Chess, Touhou on Lunatic\n\
                      -----------------------------------\n\
                      ℹ️ [EDITOR INFO]\n\
@@ -376,9 +377,9 @@ impl Palette {
                  🐙 BEGINNER-FRIENDLY GIT INTEGRATION:\n\
 - :git status                  - Check git status of workspace\n\
 - :git new repo                - Initialize a new git repository\n\
-- :git choose repo             - Scan subdirectories for local repositories\n\
+- :git choose repo [name]      - Scan subdirectories or choose specific repo\n\
 - :git login                   - Check GitHub CLI authentication status\n\
-- :git commit -tags \"msg\" branch \"main\" - Stage, commit, and push in one go\n\n\
+- :git commit -tags -m \"msg\" branch \"main\" - Stage, commit, and push in one go\n\n\
                  🔍 SEARCH & CODE EXPLORATION:\n\
 - search <term> / / <term>     - Nano-style word search in buffer\n\
 - :funcs                       - List all function signatures in buffer\n\n\
@@ -388,7 +389,7 @@ impl Palette {
 - copy lsp                     - Copy active LSP diagnostics\n\
 - paste / \"+p                 - Paste from system clipboard\n\n\
                  🤖 AI AUDIT & PROCESSES:\n\
-- check <token> <url> [model]  - Connect AI backend (Groq/OpenAI/Ollama)\n\
+- connect: <token> <url> [model] - Connect AI backend (Groq/OpenAI/Ollama)\n\
 - check <query>                - Run workspace AI audit or query check\n\
 - lsp <cmd>                    - Initialize Language Server Protocol process\n\
 - sh <cmd> / !# <cmd>          - Execute background Bash shell command\n\
@@ -517,7 +518,7 @@ impl Palette {
             PaletteAction::Code(_filename) | PaletteAction::Switch(_filename) => ("Handled".to_string(), true),
             PaletteAction::SetLsp(cmd) => {
                 if cmd.is_empty() {
-                    ("What do you tryna check it with, air?.".to_string(), false)
+                    ("What do you tryna check it with, air?".to_string(), false)
                 } else {
                     (format!("Starting LSP: {}", cmd), true)
                 }
@@ -534,7 +535,7 @@ impl Palette {
             }
             PaletteAction::AiCheck(query) => {
                 if query.is_empty() {
-                    ("Error: Specify a query or use 'check <token> <url>'".to_string(), false)
+                    ("Error: Specify a query or use 'connect: <token> <url>'".to_string(), false)
                 } else {
                     let root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
                     match crate::ai::run_check(&root, &query).await {
@@ -552,7 +553,7 @@ impl Palette {
                 Ok(out) => (out, true),
                 Err(e) => (format!("Git Error: {}", e), false),
             },
-            PaletteAction::GitChooseRepo => match crate::git::GitManager::choose_repo() {
+            PaletteAction::GitChooseRepo(name_opt) => match crate::git::GitManager::choose_repo(name_opt.as_deref()) {
                 Ok(out) => (out, true),
                 Err(e) => (format!("Git Error: {}", e), false),
             },

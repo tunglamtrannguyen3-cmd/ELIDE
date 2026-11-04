@@ -1,9 +1,12 @@
 // src/lsp.rs
 use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
@@ -61,8 +64,10 @@ impl LspWriter {
 pub struct LspClient {
     pub server_name: String,
     pub language_id: String,
-    _child: Option<Child>,
+    child: Option<Child>,
     writer: Option<LspWriter>,
+    next_id: Arc<AtomicU64>,
+    opened_uris: HashSet<String>,
 }
 
 impl LspClient {
@@ -70,8 +75,10 @@ impl LspClient {
         Self {
             server_name: "Disconnected".to_string(),
             language_id: "plaintext".to_string(),
-            _child: None,
+            child: None,
             writer: None,
+            next_id: Arc::new(AtomicU64::new(1)),
+            opened_uris: HashSet::new(),
         }
     }
 
@@ -83,25 +90,56 @@ impl LspClient {
         workspace_dir: &str,
         diag_tx: mpsc::UnboundedSender<(String, Vec<Diagnostic>)>,
     ) -> Result<()> {
-        // 1. Kill old process if one exists
-        if let Some(mut old_child) = self._child.take() {
-            let _ = old_child.kill().await;
+        // 1. Gracefully shutdown old process if one exists
+        if let Some(ref writer) = self.writer {
+            let shutdown_id = self.next_id.fetch_add(1, Ordering::SeqCst);
+            let _ = writer.send(json!({
+                "jsonrpc": "2.0",
+                "id": shutdown_id,
+                "method": "shutdown",
+                "params": null
+            }));
+            let _ = writer.send(json!({
+                "jsonrpc": "2.0",
+                "method": "exit",
+                "params": null
+            }));
         }
 
-        // 2. Safely split the command string into executable and arguments
-        let mut parts = lsp_cmd.split_whitespace();
-        let program = parts.next().ok_or_else(|| anyhow!("Empty LSP command provided"))?;
-        let args: Vec<&str> = parts.collect();
+        if let Some(mut old_child) = self.child.take() {
+            tokio::select! {
+                _ = old_child.wait() => {}
+                _ = tokio::time::sleep(Duration::from_millis(150)) => {
+                    let _ = old_child.kill().await;
+                }
+            }
+        }
 
-        // 3. Spawn LSP process
-        let mut child = Command::new(program)
+        self.opened_uris.clear();
+
+       // 2. Safely tokenize command string (respecting quotes & spaces)
+        let tokens = parse_cli_tokens(lsp_cmd);
+        let program = tokens
+            .first()
+            .cloned()
+            .ok_or_else(|| anyhow!("Empty LSP command provided"))?;
+        let args: Vec<String> = tokens.into_iter().skip(1).collect();
+
+        // 3. Spawn LSP process (Redirect stderr to log file for debugging)
+        let stderr_file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("elide_debug.log")
+            .unwrap_or_else(|_| std::fs::File::create("/dev/null").unwrap());
+
+        let mut child = Command::new(&program) // Pass a reference here!
             .args(&args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::from(stderr_file))
             .spawn()
             .map_err(|e| {
-                self.server_name = format!("Failed to launch {}", program);
+                self.server_name = format!("Failed to launch {}", program); // program is still valid here
                 anyhow!("Failed to spawn LSP process '{}': {}", lsp_cmd, e)
             })?;
 
@@ -113,18 +151,19 @@ impl LspClient {
         let stdin = child.stdin.take().expect("Failed to open stdin");
         let stdout = child.stdout.take().expect("Failed to open stdout");
 
-        self._child = Some(child);
+        self.child = Some(child);
 
         // 4. Spawn background writer
         let writer = LspWriter::spawn(stdin);
         self.writer = Some(writer.clone());
 
         let root_uri = get_file_uri(workspace_dir);
+        let init_id = self.next_id.fetch_add(1, Ordering::SeqCst);
 
-        // --- STEP 1: Send the initialize request ---
+        // --- STEP 1: Send initialize request ---
         let init_req = json!({
             "jsonrpc": "2.0",
-            "id": 1,
+            "id": init_id,
             "method": "initialize",
             "params": {
                 "processId": std::process::id(),
@@ -153,12 +192,12 @@ impl LspClient {
         });
         writer.send(init_req)?;
 
-        // --- STEP 2: Wait specifically for the initialization response ---
+        // --- STEP 2: Wait for initialization response ---
         let mut reader = BufReader::new(stdout);
         loop {
             let msg = read_lsp_message(&mut reader).await?;
             if let Ok(json) = serde_json::from_slice::<Value>(&msg) {
-                if json.get("id").and_then(|id| id.as_u64()) == Some(1) {
+                if json.get("id").and_then(|id| id.as_u64()) == Some(init_id) {
                     break;
                 }
             }
@@ -172,20 +211,64 @@ impl LspClient {
         });
         writer.send(initialized_notif)?;
 
+        // --- STEP 3.5: Automatically open all matching workspace files without duplicates ---
+        let workspace_path = std::path::PathBuf::from(workspace_dir);
+        let target_lang = active_lang.clone();
+        let writer_clone = writer.clone();
+        
+        tokio::spawn(async move {
+            let walker = ignore::WalkBuilder::new(&workspace_path)
+                .hidden(true)
+                .git_ignore(true)
+                .build();
+
+            for entry in walker.flatten() {
+                let path = entry.path();
+                if path.is_file() {
+                    let path_str = path.to_string_lossy();
+                    if path_str.contains("/target/") || path_str.contains("/node_modules/") || path_str.contains("/.git/") {
+                        continue;
+                    }
+
+                    if get_language_id(&path_str) == target_lang {
+                        if let Ok(content) = std::fs::read_to_string(path) {
+                            let file_uri = get_file_uri(&path_str);
+                            let did_open_req = json!({
+                                "jsonrpc": "2.0",
+                                "method": "textDocument/didOpen",
+                                "params": {
+                                    "textDocument": {
+                                        "uri": file_uri,
+                                        "languageId": target_lang,
+                                        "version": 1,
+                                        "text": content
+                                    }
+                                }
+                            });
+                            let _ = writer_clone.send(did_open_req);
+                        }
+                    }
+                }
+            }
+        });
+
         // --- STEP 4: Start background diagnostic listener ---
         tokio::spawn(async move {
             while let Ok(body) = read_lsp_message(&mut reader).await {
                 if let Ok(json) = serde_json::from_slice::<Value>(&body) {
                     if json.get("method").and_then(|m| m.as_str()) == Some("textDocument/publishDiagnostics") {
-                        if let Some(uri) = json.pointer("/params/uri").and_then(|u| u.as_str()) {
+                        if let Some(uri_str) = json.pointer("/params/uri").and_then(|u| u.as_str()) {
+                            let file_path = match url::Url::parse(uri_str) {
+                                Ok(url) => url.to_file_path().unwrap_or_else(|_| std::path::PathBuf::from(uri_str)),
+                                Err(_) => std::path::PathBuf::from(uri_str.strip_prefix("file://").unwrap_or(uri_str)),
+                            };
                             
-                            // Extract path and filter by target language
-                            let path = uri.strip_prefix("file://").unwrap_or(uri);
-                            if get_language_id(path) != active_lang {
-                                continue; // Silently drop diagnostics for other languages
+                            let path_lossy = file_path.to_string_lossy();
+                            if get_language_id(&path_lossy) != active_lang {
+                                continue;
                             }
 
-                            let file_uri = uri.to_string();
+                            let file_uri = uri_str.to_string();
 
                             if let Some(diags_array) = json.pointer("/params/diagnostics").and_then(|d| d.as_array()) {
                                 let parsed_diags: Vec<Diagnostic> = diags_array.iter().map(|d| {
@@ -219,18 +302,26 @@ impl LspClient {
         Ok(())
     }
 
-    /// Called when the user opens a specific file in the editor
-    pub fn open_file(&self, filename: &str, text: &str) -> Result<()> {
+    /// Called when the user opens a specific file in the editor (guarded against duplicate opens)
+    pub fn open_file(&mut self, filename: &str, text: &str) -> Result<()> {
         if get_language_id(filename) != self.language_id {
             return Ok(());
         }
+
+        let uri = get_file_uri(filename);
+        if self.opened_uris.contains(&uri) {
+            // Already opened via workspace scan or prior open; notify change instead of duplicate open
+            return self.notify_change(filename, 1, text);
+        }
+
+        self.opened_uris.insert(uri.clone());
 
         let did_open_req = json!({
             "jsonrpc": "2.0",
             "method": "textDocument/didOpen",
             "params": {
                 "textDocument": {
-                    "uri": get_file_uri(filename),
+                    "uri": uri,
                     "languageId": get_language_id(filename),
                     "version": 1,
                     "text": text
@@ -274,7 +365,7 @@ impl LspClient {
 
 impl Drop for LspClient {
     fn drop(&mut self) {
-        if let Some(mut child) = self._child.take() {
+        if let Some(mut child) = self.child.take() {
             let _ = child.start_kill();
         }
     }
@@ -290,7 +381,6 @@ impl Default for LspClient {
 // 4. DIRECTORY SCANNING & LANGUAGE IDENTIFICATION
 // ==========================================
 
-/// Scans the directory recursively to find the most used language.
 pub fn detect_workspace_language(dir: &str) -> Option<&'static str> {
     let path = Path::new(dir);
     let mut ext_counts: HashMap<&'static str, usize> = HashMap::new();
@@ -362,22 +452,26 @@ fn get_file_uri(filename: &str) -> String {
 }
 
 pub fn get_language_id(filename: &str) -> &'static str {
-    let lowercase_name = filename.to_lowercase();
+    let path = Path::new(filename);
+    let file_name = path.file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(filename)
+        .to_lowercase();
     
-    if lowercase_name.ends_with("dockerfile") || lowercase_name.starts_with("dockerfile.") {
+    if file_name.ends_with("dockerfile") || file_name.starts_with("dockerfile.") {
         return "dockerfile";
     }
-    if lowercase_name == "makefile" || lowercase_name.ends_with(".mk") {
+    if file_name == "makefile" || file_name.ends_with(".mk") {
         return "makefile";
     }
-    if lowercase_name == "jenkinsfile" {
+    if file_name == "jenkinsfile" {
         return "jenkinsfile";
     }
-    if lowercase_name == "cmakelists.txt" {
+    if file_name == "cmakelists.txt" {
         return "cmake";
     }
 
-    let ext = filename.rsplit('.').next().unwrap_or("");
+    let ext = file_name.rsplit('.').next().unwrap_or("");
     match ext {
         "rs" => "rust",
         "zig" => "zig",
@@ -387,7 +481,7 @@ pub fn get_language_id(filename: &str) -> &'static str {
         "d" | "di" => "d",
         "nim" => "nim",
         "v" => "v",
-        "asm" | "s" => "assembly",
+        "asm" | "s" | "S" => "assembly",
         "gd" => "gdscript",
         "cs" => "csharp",
         "glsl" | "vert" | "frag" | "geom" | "comp" => "glsl",
@@ -452,4 +546,32 @@ pub fn get_language_id(filename: &str) -> &'static str {
         "diff" | "patch" => "diff",
         _ => "plaintext",
     }
+}
+
+/// Helper to split command strings while respecting quoted sentences and paths
+fn parse_cli_tokens(input: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+
+    for c in input.chars() {
+        match c {
+            '"' | '\'' => {
+                in_quotes = !in_quotes;
+            }
+            ' ' | '\t' if !in_quotes => {
+                if !current.is_empty() {
+                    tokens.push(current.clone());
+                    current.clear();
+                }
+            }
+            _ => {
+                current.push(c);
+            }
+        }
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
 }

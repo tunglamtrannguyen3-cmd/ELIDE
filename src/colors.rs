@@ -16,6 +16,26 @@ pub enum Theme {
     MagicForest,
     Swampy,
     HarvestTime,
+    Nord,
+    CatppuccinMocha,
+}
+
+impl Theme {
+    /// Safely parse theme from string input (used by command palette)
+    pub fn from_input(input: &str) -> Self {
+        match input.trim().to_lowercase().as_str() {
+            "shrine" | "spring" => Theme::SpringAtTheShrine,
+            "tokyo" | "tokyonight" => Theme::TokyoNight,
+            "firefly" | "graveyard" => Theme::GraveyardOfTheFirefly,
+            "ocean" | "deepocean" => Theme::DeepOcean,
+            "forest" | "magicforest" => Theme::MagicForest,
+            "swamp" | "swampy" => Theme::Swampy,
+            "harvest" | "harvesttime" => Theme::HarvestTime,
+            "nord" => Theme::Nord,
+            "catppuccin" | "mocha" => Theme::CatppuccinMocha,
+            _ => Theme::Serenity,
+        }
+    }
 }
 
 // ============================================================
@@ -191,6 +211,44 @@ pub const HARVEST_TIME: ThemePalette = ThemePalette {
 };
 
 // ============================================================
+// NORD — Arctic, north-bluish clean aesthetic
+// ============================================================
+
+pub const NORD: ThemePalette = ThemePalette {
+    bg_main: Color::Rgb { r: 46, g: 52, b: 64 },
+    bg_panel: Color::Rgb { r: 59, g: 66, b: 82 },
+    type_color: Color::Rgb { r: 143, g: 188, b: 187 },
+    function: Color::Rgb { r: 129, g: 161, b: 193 },
+    text: Color::Rgb { r: 216, g: 222, b: 233 },
+    comment: Color::Rgb { r: 76, g: 86, b: 106 },
+    border: Color::Rgb { r: 67, g: 76, b: 94 },
+    accent: Color::Rgb { r: 136, g: 192, b: 208 },
+    success: Color::Rgb { r: 163, g: 190, b: 140 },
+    error: Color::Rgb { r: 191, g: 97, b: 106 },
+    warning: Color::Rgb { r: 235, g: 203, b: 139 },
+    hint: Color::Rgb { r: 143, g: 188, b: 187 },
+};
+
+// ============================================================
+// CATPPUCCIN MOCHA — Soothing pastel dark theme
+// ============================================================
+
+pub const CATPPUCCIN_MOCHA: ThemePalette = ThemePalette {
+    bg_main: Color::Rgb { r: 30, g: 30, b: 46 },
+    bg_panel: Color::Rgb { r: 24, g: 24, b: 37 },
+    type_color: Color::Rgb { r: 249, g: 226, b: 175 },
+    function: Color::Rgb { r: 137, g: 180, b: 250 },
+    text: Color::Rgb { r: 205, g: 214, b: 244 },
+    comment: Color::Rgb { r: 108, g: 112, b: 134 },
+    border: Color::Rgb { r: 88, g: 91, b: 112 },
+    accent: Color::Rgb { r: 245, g: 194, b: 231 },
+    success: Color::Rgb { r: 166, g: 227, b: 161 },
+    error: Color::Rgb { r: 243, g: 139, b: 168 },
+    warning: Color::Rgb { r: 250, g: 179, b: 135 },
+    hint: Color::Rgb { r: 148, g: 226, b: 213 },
+};
+
+// ============================================================
 // PALETTE LOOKUP
 // ============================================================
 
@@ -204,6 +262,8 @@ pub fn palette_for(theme: Theme) -> &'static ThemePalette {
         Theme::MagicForest => &MAGIC_FOREST,
         Theme::Swampy => &SWAMPY,
         Theme::HarvestTime => &HARVEST_TIME,
+        Theme::Nord => &NORD,
+        Theme::CatppuccinMocha => &CATPPUCCIN_MOCHA,
     }
 }
 
@@ -215,7 +275,7 @@ pub fn palette_for(theme: Theme) -> &'static ThemePalette {
 pub enum Status {
     Modified,
     Saved,
-    Error, // <--- Active error status variant
+    Error,
 }
 
 pub fn color_for_status_in(theme: Theme, status: Status) -> Color {
@@ -224,7 +284,7 @@ pub fn color_for_status_in(theme: Theme, status: Status) -> Color {
     match status {
         Status::Saved => palette.success,
         Status::Modified => palette.warning,
-        Status::Error => palette.error, // <--- This reads palette.error!
+        Status::Error => palette.error,
     }
 }
 

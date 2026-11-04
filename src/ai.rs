@@ -89,9 +89,13 @@ pub struct ChatResponse {
 // ==========================================
 
 fn try_handle_command(input_trimmed: &str) -> Result<Option<String>, String> {
-    // Connection command (<token> <url> [model])
-    if input_trimmed.contains("http://") || input_trimmed.contains("https://") {
-        let parts: Vec<&str> = input_trimmed.split_whitespace().collect();
+    // Require explicit "connect:" or "connect " prefix to prevent accidental URL prompt hijacking
+    let command_payload = input_trimmed
+        .strip_prefix("connect:")
+        .or_else(|| input_trimmed.strip_prefix("connect"));
+
+    if let Some(rest) = command_payload {
+        let parts: Vec<&str> = rest.split_whitespace().collect();
         if parts.len() >= 2 {
             let mut config = get_config().lock().map_err(|e| format!("Lock error: {}", e))?;
             config.api_key = parts[0].to_string();
@@ -106,7 +110,7 @@ fn try_handle_command(input_trimmed: &str) -> Result<Option<String>, String> {
                 config.api_url, config.model
             )));
         } else {
-            return Err("Usage for connection: <token> <url> [model]".to_string());
+            return Err("Usage for connection: connect: <token> <url> [model]".to_string());
         }
     }
 
@@ -151,20 +155,34 @@ fn gather_workspace_context(workspace_root: &Path, max_chars: usize) -> String {
     for entry in walker.flatten() {
         let path = entry.path();
         if path.is_file() {
+            let path_str = path.to_string_lossy();
+            if path_str.contains("/target/") || path_str.contains("/node_modules/") || path_str.contains("/.git/") {
+                continue;
+            }
+
+            // Prevent loading massive files into memory
+            if let Ok(metadata) = fs::metadata(path) {
+                if metadata.len() > 500_000 {
+                    continue;
+                }
+            }
+
             if let Ok(content) = fs::read_to_string(path) {
                 let rel_path = path
                     .strip_prefix(workspace_root)
                     .unwrap_or(path)
                     .display();
-                code_context.push_str(&format!(
+                let file_snippet = format!(
                     "\n--- FILE: {} ---\n{}\n",
                     rel_path, content
-                ));
+                );
 
-                if code_context.len() > max_chars {
-                    code_context.push_str("\n[Context truncated due to size limits...]\n");
+                if code_context.chars().count() + file_snippet.chars().count() > max_chars {
+                    code_context.push_str("\n[Context truncated due to character limits...]\n");
                     break;
                 }
+
+                code_context.push_str(&file_snippet);
             }
         }
     }
@@ -179,7 +197,6 @@ pub async fn run_chat_stream(
     workspace_root: &Path,
     messages: Vec<(String, String)>,
 ) -> Result<String, String> {
-    // Check if the latest message is a configuration command
     if let Some((role, content)) = messages.last() {
         let input_trimmed = content.trim();
         if role == "user" {
@@ -189,11 +206,13 @@ pub async fn run_chat_stream(
         }
     }
 
-    // Read current config state
     let (api_key, api_url, model, system_prompt, max_context_chars) = {
         let config = get_config().lock().map_err(|e| format!("Lock error: {}", e))?;
         if config.api_key.is_empty() && !config.api_url.contains("localhost") {
-            return Err("❌ AI Not Connected!\nPlease configure your credentials first using:\n<token> <url> [model]\n\nCommands:\n• prompt: <new system prompt>\n• limit: <max characters>".to_string());
+            return Err(
+                "❌ AI Not Connected!\nPlease configure your credentials first using:\nconnect: <token> <url> [model]\n\nCommands:\nprompt: <new system prompt>\nlimit: <max characters>"
+                    .to_string(),
+            );
         }
         (
             config.api_key.clone(),
@@ -204,10 +223,8 @@ pub async fn run_chat_stream(
         )
     };
 
-    // Gather workspace files context
     let code_context = gather_workspace_context(workspace_root, max_context_chars);
 
-    // Build API messages payload
     let mut api_messages = vec![ChatMessage {
         role: "system".to_string(),
         content: system_prompt,
@@ -230,7 +247,6 @@ pub async fn run_chat_stream(
         });
     }
 
-    // Build and send HTTP request to LLM endpoint
     let payload = ChatRequest {
         model,
         messages: api_messages,
@@ -267,7 +283,6 @@ pub async fn run_chat_stream(
         .ok_or_else(|| "Received empty response from AI model.".to_string())
 }
 
-/// Fallback wrapper helper for single-prompt checks
 pub async fn run_check(workspace_root: &Path, input: &str) -> Result<String, String> {
     run_chat_stream(workspace_root, vec![("user".to_string(), input.to_string())]).await
 }
