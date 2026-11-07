@@ -62,7 +62,7 @@ struct AppState {
     command_history: Vec<(String, bool)>,
     clipboard: String,
     doc_version: u32,
-    buffer_cache: HashMap<String, Vec<String>>,
+    buffer_cache: HashMap<String, (Vec<String>, bool)>,
     pub should_exit: bool,
     show_lsp_pane: bool,
     pub show_ai_chat: bool,
@@ -114,7 +114,7 @@ impl AppState {
     fn cache_current_buffer(&mut self) {
         if let Some(ref filename) = self.editor.filename {
             let key = Self::normalize_path(filename);
-            self.buffer_cache.insert(key, self.editor.lines.clone());
+            self.buffer_cache.insert(key, (self.editor.lines.clone(), self.editor.is_dirty));
         }
     }
 
@@ -125,14 +125,15 @@ impl AppState {
         let full_text = std::fs::read_to_string(&canonical_path).unwrap_or_default();
         let _ = self.lsp_client.open_file(&canonical_path, &full_text);
 
-        if let Some(cached_lines) = self.buffer_cache.get(&canonical_path) {
+        if let Some((cached_lines, cached_dirty)) = self.buffer_cache.get(&canonical_path) {
             self.editor.lines = cached_lines.clone();
             self.editor.filename = Some(canonical_path.clone());
             self.editor.cursor = editor::Cursor { row: 0, col: 0 };
-            self.editor.is_dirty = false; // Fixed: Cached pristine files start clean[cite: 3]
+            self.editor.is_dirty = *cached_dirty;
         } else {
             self.editor.open(&canonical_path)?;
-            self.buffer_cache.insert(canonical_path.clone(), self.editor.lines.clone());
+            let dirty = self.editor.is_dirty;
+            self.buffer_cache.insert(canonical_path.clone(), (self.editor.lines.clone(), dirty));
             self.editor.filename = Some(canonical_path.clone());
         }
 
@@ -146,11 +147,16 @@ impl AppState {
     fn new_buffered_file(&mut self, path_str: &str) -> Result<()> {
         self.cache_current_buffer();
         let canonical_path = Self::normalize_path(path_str);
+
+        if std::path::Path::new(&canonical_path).exists() {
+            return self.open_buffered_file(&canonical_path);
+        }
+
         self.editor.filename = Some(canonical_path.clone());
         self.editor.lines = vec![String::new()];
         self.editor.cursor = editor::Cursor { row: 0, col: 0 };
         self.editor.is_dirty = true;
-        self.buffer_cache.insert(canonical_path.clone(), self.editor.lines.clone());
+        self.buffer_cache.insert(canonical_path.clone(), (self.editor.lines.clone(), true));
 
         self.doc_version += 1;
         let _ = self.lsp_client.open_file(&canonical_path, "");
@@ -166,18 +172,20 @@ impl AppState {
             };
         }
         let mut saved_count = 0;
-        for (path_str, lines) in &self.buffer_cache {
+        for (path_str, (lines, _)) in &self.buffer_cache {
             let mut content = lines.join("\n");
             content.push('\n');
             std::fs::write(path_str, content).map_err(|e| format!("Failed to save {}: {}", path_str, e))?;
             saved_count += 1;
+        }
+        for (_, dirty_flag) in self.buffer_cache.values_mut() {
+            *dirty_flag = false;
         }
         self.editor.is_dirty = false;
         Ok(format!("Successfully saved {} buffer(s) to disk.", saved_count))
     }
 
     async fn handle_key_input(&mut self, key: crossterm::event::KeyEvent, diag_tx: &mpsc::UnboundedSender<(String, Vec<Diagnostic>)>) -> bool {
-        // Fixed: Restricted AI hotkey strictly to Alt+A to preserve Ctrl+A text editing behavior[cite: 3]
         let is_ai_hotkey = key.modifiers.contains(KeyModifiers::ALT) && key.code == KeyCode::Char('a');
 
         if process::is_esc(&key) {
@@ -311,7 +319,7 @@ impl AppState {
 
     async fn handle_ai_chat_input(&mut self, key: crossterm::event::KeyEvent) {
         if self.is_waiting_for_ai {
-            return; // Ignore all input while waiting for active AI response
+            return;
         }
 
         match key.code {
@@ -321,9 +329,9 @@ impl AppState {
                 if !prompt.is_empty() {
                     self.is_waiting_for_ai = true;
                     self.ai_messages.push(("user".to_string(), prompt));
-                    self.ai_messages.push(("assistant".to_string(), "🤖 AI is thinking...".to_string()));
                     let root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
                     let messages = self.ai_messages.clone();
+                    self.ai_messages.push(("assistant".to_string(), "✨ AI is thinking...".to_string()));
                     let tx = self.ai_tx.clone();
                     tokio::spawn(async move {
                         let res = ai::run_chat_stream(&root, messages).await;
@@ -414,7 +422,7 @@ impl AppState {
                     palette::PaletteAction::New(ref filename) => {
                         if !filename.is_empty() {
                             match self.new_buffered_file(filename) {
-                                Ok(_) => self.command_history.push((format!("Created new file: {}", filename), true)),
+                                Ok(_) => self.command_history.push((format!("Created/Opened file: {}", filename), true)),
                                 Err(e) => self.command_history.push((format!("Error creating file: {}", e), false)),
                             }
                         }
@@ -428,6 +436,13 @@ impl AppState {
                                 Err(e) => self.command_history.push((format!("Error opening file: {}", e), false)),
                             }
                         }
+                        self.palette.input_buffer.clear();
+                        return;
+                    }
+                    palette::PaletteAction::Theme(ref theme_name) => {
+                        let t = Theme::from_input(theme_name);
+                        self.current_theme = t;
+                        self.command_history.push((format!("🎨 Theme switched successfully to '{:?}'", t), true));
                         self.palette.input_buffer.clear();
                         return;
                     }
@@ -448,8 +463,15 @@ impl AppState {
                     } else {
                         lsp::detect_workspace_language(&curr_dir).unwrap_or("plaintext")
                     };
-                    let _ = self.lsp_client.init_workspace(&cmd, target_lang, &curr_dir, diag_tx.clone()).await;
-                    self.show_lsp_pane = true;
+                    match self.lsp_client.init_workspace(&cmd, target_lang, &curr_dir, diag_tx.clone()).await {
+                        Ok(_) => {
+                            self.show_lsp_pane = true;
+                            self.command_history.push((format!("LSP server '{}' initialized successfully.", cmd), true));
+                        }
+                        Err(e) => {
+                            self.command_history.push((format!("❌ Failed to start LSP server '{}': {}", cmd, e), false));
+                        }
+                    }
                 }
 
                 self.command_history.push((msg, success));
@@ -564,12 +586,12 @@ async fn main() -> Result<()> {
                 }).collect();
 
                 let tree_block = Paragraph::new(tree_lines)
-                    .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(border_col)).title(" 📂 Workspace "))
+                    .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(border_col)).title(" 📁 Workspace "))
                     .style(Style::default().bg(bg_panel));
                 f.render_widget(tree_block, workspace_chunks[0]);
                 1
             } else {
-                0
+                1
             };
 
             let editor_chunk = workspace_chunks[editor_workspace_idx];
@@ -768,4 +790,40 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
             Constraint::Percentage((100 - percent_x) / 2),
         ])
         .split(popup_layout[1])[1]
+}
+
+// ==========================================
+// UNIT TESTS
+// ==========================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_to_ratatui_color() {
+        assert_eq!(to_ratatui_color(crossterm::style::Color::Black), Color::Black);
+        assert_eq!(to_ratatui_color(crossterm::style::Color::Red), Color::Red);
+        assert_eq!(
+            to_ratatui_color(crossterm::style::Color::Rgb { r: 10, g: 20, b: 30 }),
+            Color::Rgb(10, 20, 30)
+        );
+    }
+
+    #[test]
+    fn test_is_function_line() {
+        assert!(AppState::is_function_line("fn foo() {}"));
+        assert!(AppState::is_function_line("pub fn bar() {}"));
+        assert!(AppState::is_function_line("async fn baz() {}"));
+        assert!(!AppState::is_function_line("// fn commented out"));
+        assert!(!AppState::is_function_line("let x = 5;"));
+    }
+
+    #[test]
+    fn test_centered_rect() {
+        let area = Rect::new(0, 0, 100, 100);
+        let popup = centered_rect(50, 50, area);
+        assert_eq!(popup.width, 50);
+        assert_eq!(popup.height, 50);
+    }
 }

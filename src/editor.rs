@@ -9,6 +9,7 @@ use ratatui::{
 use std::fs;
 use std::io::{self, Write};
 use unicode_width::UnicodeWidthStr;
+use crate::colors::Theme;
 
 pub struct SystemClipboard {
     ctx: Option<Clipboard>,
@@ -66,6 +67,7 @@ pub struct Editor {
     pub is_dirty: bool,
     pub row_offset: usize,
     pub col_offset: usize, // Measured in visual terminal columns
+    pub current_theme: Theme,
 }
 
 impl Editor {
@@ -77,6 +79,7 @@ impl Editor {
             is_dirty: false,
             row_offset: 0,
             col_offset: 0,
+            current_theme: Theme::default(),
         }
     }
 
@@ -87,6 +90,8 @@ impl Editor {
             .unwrap_or_else(|| s.len())
     }
 
+    /// Calculates the visual terminal column width up to the cursor,
+    /// correctly accounting for 2-column CJK ideographs and emojis.
     pub fn visual_cursor_col(&self) -> usize {
         if let Some(line) = self.lines.get(self.cursor.row) {
             line.chars()
@@ -295,20 +300,129 @@ impl Editor {
         }
 
         if col_delta < 0 {
-            if self.cursor.col > 0 {
-                self.cursor.col -= 1;
-            } else if self.cursor.row > 0 {
-                self.cursor.row -= 1;
-                self.cursor.col = self.lines[self.cursor.row].chars().count();
+            for _ in 0..col_delta.unsigned_abs() {
+                if self.cursor.col > 0 {
+                    self.cursor.col -= 1;
+                } else if self.cursor.row > 0 {
+                    self.cursor.row -= 1;
+                    self.cursor.col = self.lines[self.cursor.row].chars().count();
+                }
             }
         } else if col_delta > 0 {
-            let max_col = self.lines[self.cursor.row].chars().count();
-            if self.cursor.col < max_col {
-                self.cursor.col += 1;
-            } else if self.cursor.row + 1 < self.lines.len() {
-                self.cursor.row += 1;
-                self.cursor.col = 0;
+            for _ in 0..col_delta {
+                let max_col = self.lines[self.cursor.row].chars().count();
+                if self.cursor.col < max_col {
+                    self.cursor.col += 1;
+                } else if self.cursor.row + 1 < self.lines.len() {
+                    self.cursor.row += 1;
+                    self.cursor.col = 0;
+                }
             }
         }
+    }
+}
+
+// ==========================================
+// UNIT TESTS
+// ==========================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_char_to_byte_idx() {
+        let s = "hello世界";
+        assert_eq!(Editor::char_to_byte_idx(s, 0), 0);
+        assert_eq!(Editor::char_to_byte_idx(s, 5), 5); // 'o'
+        assert_eq!(Editor::char_to_byte_idx(s, 6), 8); // '界' starts at byte 8
+        assert_eq!(Editor::char_to_byte_idx(s, 100), s.len());
+    }
+
+    #[test]
+    fn test_editor_new() {
+        let editor = Editor::new();
+        assert_eq!(editor.lines.len(), 1);
+        assert_eq!(editor.lines[0], "");
+        assert_eq!(editor.cursor.row, 0);
+        assert_eq!(editor.cursor.col, 0);
+        assert!(!editor.is_dirty);
+    }
+
+    #[test]
+    fn test_insert_and_backspace() {
+        let mut editor = Editor::new();
+        editor.insert_char('a');
+        editor.insert_char('b');
+        assert_eq!(editor.lines[0], "ab");
+        assert_eq!(editor.cursor.col, 2);
+        assert!(editor.is_dirty);
+
+        editor.backspace();
+        assert_eq!(editor.lines[0], "a");
+        assert_eq!(editor.cursor.col, 1);
+    }
+
+    #[test]
+    fn test_insert_newline() {
+        let mut editor = Editor::new();
+        editor.insert_char('h');
+        editor.insert_char('i');
+        editor.insert_newline();
+        editor.insert_char('t');
+        
+        assert_eq!(editor.lines.len(), 2);
+        assert_eq!(editor.lines[0], "hi");
+        assert_eq!(editor.lines[1], "t");
+        assert_eq!(editor.cursor.row, 1);
+        assert_eq!(editor.cursor.col, 1);
+    }
+
+    #[test]
+    fn test_insert_tab() {
+        let mut editor = Editor::new();
+        editor.insert_tab();
+        assert_eq!(editor.lines[0], "    ");
+        assert_eq!(editor.cursor.col, 4);
+    }
+
+    #[test]
+    fn test_delete_char() {
+        let mut editor = Editor::new();
+        editor.insert_char('a');
+        editor.insert_char('b');
+        editor.move_cursor(0, -2);
+        editor.delete_char();
+        assert_eq!(editor.lines[0], "b");
+    }
+
+    #[test]
+    fn test_move_cursor() {
+        let mut editor = Editor::new();
+        editor.lines = vec!["line1".to_string(), "line2".to_string()];
+        editor.cursor = Cursor { row: 0, col: 0 };
+
+        editor.move_cursor(1, 0);
+        assert_eq!(editor.cursor.row, 1);
+        assert_eq!(editor.cursor.col, 0);
+
+        editor.move_cursor(-1, 0);
+        assert_eq!(editor.cursor.row, 0);
+    }
+
+    #[test]
+    fn test_visual_cursor_col() {
+        let mut editor = Editor::new();
+        editor.lines = vec!["rust🦀中文".to_string()];
+        editor.cursor = Cursor { row: 0, col: 6 }; // after r-u-s-t-🦀-中
+        // r(1)u(1)s(1)t(1) + 🦀(2) + 中(2) = 8 visual columns
+        assert_eq!(editor.visual_cursor_col(), 8);
+    }
+
+    #[test]
+    fn test_system_clipboard_fallback() {
+        let mut clip = SystemClipboard::new();
+        clip.fallback_buffer = "test_clipboard".to_string();
+        assert_eq!(clip.get_text(), "test_clipboard");
     }
 }

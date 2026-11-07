@@ -3,7 +3,7 @@ name = "elide"
 version = "2.4.0"
 edition = "2021"
 description = "Easier Life @ IDE: A high-performance, ultra-lightweight terminal development environment built in Rust. Designed to protect your RAM, minimize environmental footprint, and preserve developer mental health through built-in recovery stations."
-homepage = "https://github.com/tunglamtrannguyen3-cmd/ELIDE"
+homepage = "tunglamtrannguyen3@gmail.com"
 repository = "https://github.com/tunglamtrannguyen3-cmd/ELIDE"
 readme = "README.md"
 license = "License-Ref-EOPL-2026.2"
@@ -11,43 +11,41 @@ keywords = ["ide", "terminal", "ratatui", "lightweight", "developer-wellbeing"]
 categories = ["development-tools::editors", "command-line-utilities"]
 
 [dependencies]
-# Terminal handling
+# Terminal handling & TUI rendering
 crossterm = "0.29"
-
-# TUI rendering
 ratatui = "0.30"
 
-# Async runtime for non-blocking execution
+# Async runtime for non-blocking execution & networking
 tokio = { version = "1.54.1", features = ["full"] }
+reqwest = { version = "0.13.5", features = ["json"] }
 
-# Error handling
-anyhow = "1.0"
-
-# Direct Linux Kernel & POSIX interfaces
-libc = "0.2"
-
-# System call wrapper with Peak RAM tracking via getrusage
-nix = { version = "0.31", features = ["process", "mman", "ptrace", "resource", "user"] }
-
-# Linux eBPF kernel space program loader & Tokio integration
-aya = "0.14"
-
-unicode-width = "0.2"
+# Serialization & URL parsing
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 url = "2.5.8"
 
-# Native AI Repo Auditor Dependencies
-reqwest = { version = "0.13.5", features = ["json"] }
+# Error handling & workspace scanning
+anyhow = "1.0"
 ignore = "0.4"
 
-# Copy & Paste to clipboard
+# Unicode & text layout support (CJK and Emojis)
+unicode-width = "0.2"
+
+# System integration, clipboard, & POSIX interfaces
 arboard = "3.7.0"
 base64 = "0.23.1"
+libc = "0.2"
+nix = { version = "0.31", features = ["process", "mman", "ptrace", "resource", "user"] }
+
+# Linux eBPF kernel space program loader & tracing
+aya = "0.14"
+
+[dev-dependencies]
+tempfile = "3.8"
 
 [profile.release]
 opt-level = 3
-lto = "fat"              # Full Link-Time Optimization
-panic = "abort"          # Eliminates unwinding landing pads
+lto = "fat"             # Full Link-Time Optimization
+panic = "abort"         # Eliminates unwinding landing pads for smaller binary size
 codegen-units = 1
-strip = "symbols"
+strip = "symbols"       # Removes debug symbols for production deployment

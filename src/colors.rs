@@ -294,3 +294,167 @@ pub fn attribute_for_status(status: Status) -> Attribute {
         _ => Attribute::Reset,
     }
 }
+
+// ============================================================
+// UNIT TESTS
+// ============================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_theme_from_input() {
+        assert_eq!(Theme::from_input("shrine"), Theme::SpringAtTheShrine);
+        assert_eq!(Theme::from_input("SPRING"), Theme::SpringAtTheShrine);
+        assert_eq!(Theme::from_input("tokyonight"), Theme::TokyoNight);
+        assert_eq!(Theme::from_input("firefly"), Theme::GraveyardOfTheFirefly);
+        assert_eq!(Theme::from_input("ocean"), Theme::DeepOcean);
+        assert_eq!(Theme::from_input("forest"), Theme::MagicForest);
+        assert_eq!(Theme::from_input("swamp"), Theme::Swampy);
+        assert_eq!(Theme::from_input("harvest"), Theme::HarvestTime);
+        assert_eq!(Theme::from_input("nord"), Theme::Nord);
+        assert_eq!(Theme::from_input("catppuccin"), Theme::CatppuccinMocha);
+        assert_eq!(Theme::from_input("unknown_theme"), Theme::Serenity);
+    }
+
+    #[test]
+    fn test_palette_lookup() {
+        let themes = [
+            Theme::Serenity,
+            Theme::SpringAtTheShrine,
+            Theme::TokyoNight,
+            Theme::GraveyardOfTheFirefly,
+            Theme::DeepOcean,
+            Theme::MagicForest,
+            Theme::Swampy,
+            Theme::HarvestTime,
+            Theme::Nord,
+            Theme::CatppuccinMocha,
+        ];
+
+        for theme in themes {
+            let palette = palette_for(theme);
+            let _ = palette.bg_main;
+            let _ = palette.success;
+        }
+    }
+
+    #[test]
+    fn test_status_systems() {
+        let color = color_for_status_in(Theme::Serenity, Status::Saved);
+        assert_eq!(color, SERENITY.success);
+
+        let mod_color = color_for_status_in(Theme::Serenity, Status::Modified);
+        assert_eq!(mod_color, SERENITY.warning);
+
+        let err_color = color_for_status_in(Theme::Serenity, Status::Error);
+        assert_eq!(err_color, SERENITY.error);
+
+        assert_eq!(attribute_for_status(Status::Modified), Attribute::Bold);
+        assert_eq!(attribute_for_status(Status::Error), Attribute::Bold);
+        assert_eq!(attribute_for_status(Status::Saved), Attribute::Reset);
+    }
+    // ==========================================
+// EXPANDED UNIT TESTS
+// ==========================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_theme_from_input() {
+        assert_eq!(Theme::from_input("shrine"), Theme::SpringAtTheShrine);
+        assert_eq!(Theme::from_input("SPRING"), Theme::SpringAtTheShrine);
+        assert_eq!(Theme::from_input("tokyonight"), Theme::TokyoNight);
+        assert_eq!(Theme::from_input("firefly"), Theme::GraveyardOfTheFirefly);
+        assert_eq!(Theme::from_input("ocean"), Theme::DeepOcean);
+        assert_eq!(Theme::from_input("forest"), Theme::MagicForest);
+        assert_eq!(Theme::from_input("swamp"), Theme::Swampy);
+        assert_eq!(Theme::from_input("harvest"), Theme::HarvestTime);
+        assert_eq!(Theme::from_input("nord"), Theme::Nord);
+        assert_eq!(Theme::from_input("catppuccin"), Theme::CatppuccinMocha);
+        assert_eq!(Theme::from_input("unknown_theme"), Theme::Serenity);
+    }
+
+    #[test]
+    fn test_theme_from_input_edge_cases() {
+        assert_eq!(Theme::from_input("   shrine   "), Theme::SpringAtTheShrine);
+        assert_eq!(Theme::from_input("ToKyO"), Theme::TokyoNight);
+        assert_eq!(Theme::from_input(""), Theme::Serenity);
+        assert_eq!(Theme::from_input("random_nonsense"), Theme::Serenity);
+        assert_eq!(Theme::from_input("mocha"), Theme::CatppuccinMocha);
+    }
+
+    #[test]
+    fn test_theme_default() {
+        assert_eq!(Theme::default(), Theme::Serenity);
+    }
+
+    #[test]
+    fn test_palette_lookup() {
+        let themes = [
+            Theme::Serenity,
+            Theme::SpringAtTheShrine,
+            Theme::TokyoNight,
+            Theme::GraveyardOfTheFirefly,
+            Theme::DeepOcean,
+            Theme::MagicForest,
+            Theme::Swampy,
+            Theme::HarvestTime,
+            Theme::Nord,
+            Theme::CatppuccinMocha,
+        ];
+
+        for theme in themes {
+            let palette = palette_for(theme);
+            let _ = palette.bg_main;
+            let _ = palette.success;
+        }
+    }
+
+    #[test]
+    fn test_status_systems() {
+        let color = color_for_status_in(Theme::Serenity, Status::Saved);
+        assert_eq!(color, SERENITY.success);
+
+        let mod_color = color_for_status_in(Theme::Serenity, Status::Modified);
+        assert_eq!(mod_color, SERENITY.warning);
+
+        let err_color = color_for_status_in(Theme::Serenity, Status::Error);
+        assert_eq!(err_color, SERENITY.error);
+
+        assert_eq!(attribute_for_status(Status::Modified), Attribute::Bold);
+        assert_eq!(attribute_for_status(Status::Error), Attribute::Bold);
+        assert_eq!(attribute_for_status(Status::Saved), Attribute::Reset);
+    }
+
+    #[test]
+    fn test_color_for_status_all_themes() {
+        let themes = [
+            Theme::Serenity,
+            Theme::SpringAtTheShrine,
+            Theme::TokyoNight,
+            Theme::GraveyardOfTheFirefly,
+            Theme::DeepOcean,
+            Theme::MagicForest,
+            Theme::Swampy,
+            Theme::HarvestTime,
+            Theme::Nord,
+            Theme::CatppuccinMocha,
+        ];
+
+        for theme in themes {
+            let saved = color_for_status_in(theme, Status::Saved);
+            let modified = color_for_status_in(theme, Status::Modified);
+            let error = color_for_status_in(theme, Status::Error);
+
+            let palette = palette_for(theme);
+            assert_eq!(saved, palette.success);
+            assert_eq!(modified, palette.warning);
+            assert_eq!(error, palette.error);
+        }
+    }
+}
+}

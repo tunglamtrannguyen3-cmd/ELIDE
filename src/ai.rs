@@ -3,7 +3,7 @@ use anyhow::Result;
 use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::Path;
+use std::path::{Component, Path};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
@@ -58,10 +58,36 @@ fn get_http_client() -> &'static reqwest::Client {
 // 2. DATA STRUCTURES
 // ==========================================
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Clone, Debug)]
 pub struct ChatMessage {
     pub role: String,
     pub content: String,
+}
+
+impl<'de> Deserialize<'de> for ChatMessage {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct RawChatMessage {
+            role: String,
+            #[serde(default)]
+            content: Option<serde_json::Value>,
+        }
+
+        let raw = RawChatMessage::deserialize(deserializer)?;
+        let content_str = match raw.content {
+            Some(serde_json::Value::String(s)) => s,
+            Some(serde_json::Value::Null) | None => String::new(),
+            Some(other) => other.to_string(),
+        };
+
+        Ok(ChatMessage {
+            role: raw.role,
+            content: content_str,
+        })
+    }
 }
 
 #[derive(Serialize)]
@@ -88,11 +114,11 @@ pub struct ChatResponse {
 // 3. COMMAND PARSING & CONFIGURATION HELPERS
 // ==========================================
 
-fn try_handle_command(input_trimmed: &str) -> Result<Option<String>, String> {
-    // Require explicit "connect:" or "connect " prefix to prevent accidental URL prompt hijacking
+pub(crate) fn try_handle_command(input_trimmed: &str) -> Result<Option<String>, String> {
+    // 1. Connection Command
     let command_payload = input_trimmed
         .strip_prefix("connect:")
-        .or_else(|| input_trimmed.strip_prefix("connect"));
+        .or_else(|| input_trimmed.strip_prefix("connect "));
 
     if let Some(rest) = command_payload {
         let parts: Vec<&str> = rest.split_whitespace().collect();
@@ -110,12 +136,17 @@ fn try_handle_command(input_trimmed: &str) -> Result<Option<String>, String> {
                 config.api_url, config.model
             )));
         } else {
-            return Err("Usage for connection: connect: <token> <url> [model]".to_string());
+            return Err("Usage for connection: connect: <token> <url> [model] or connect <token> <url> [model]".to_string());
         }
     }
 
-    // System prompt command (`prompt: <new prompt text>`)
-    if let Some(new_prompt) = input_trimmed.strip_prefix("prompt:") {
+    // 2. System Prompt Alias Parsing (supports `set-sysprompt` and `prompt:`)
+    let prompt_payload = input_trimmed
+        .strip_prefix("set-sysprompt ")
+        .or_else(|| input_trimmed.strip_prefix("set-sysprompt:"))
+        .or_else(|| input_trimmed.strip_prefix("prompt:"));
+
+    if let Some(new_prompt) = prompt_payload {
         let mut config = get_config().lock().map_err(|e| format!("Lock error: {}", e))?;
         config.system_prompt = new_prompt.trim().to_string();
         return Ok(Some(format!(
@@ -124,8 +155,13 @@ fn try_handle_command(input_trimmed: &str) -> Result<Option<String>, String> {
         )));
     }
 
-    // Character limit command (`limit: <number>`)
-    if let Some(limit_str) = input_trimmed.strip_prefix("limit:") {
+    // 3. Max Context Character Limit Alias Parsing (supports `set-max-lim` and `limit:`)
+    let limit_payload = input_trimmed
+        .strip_prefix("set-max-lim ")
+        .or_else(|| input_trimmed.strip_prefix("set-max-lim:"))
+        .or_else(|| input_trimmed.strip_prefix("limit:"));
+
+    if let Some(limit_str) = limit_payload {
         if let Ok(new_limit) = limit_str.trim().parse::<usize>() {
             let mut config = get_config().lock().map_err(|e| format!("Lock error: {}", e))?;
             config.max_context_chars = new_limit;
@@ -134,7 +170,7 @@ fn try_handle_command(input_trimmed: &str) -> Result<Option<String>, String> {
                 config.max_context_chars
             )));
         } else {
-            return Err("Usage for limit: limit: <number_of_characters> (e.g. limit: 150000)".to_string());
+            return Err("Usage for limit: set-max-lim <number> or limit: <number> (e.g. set-max-lim 150000)".to_string());
         }
     }
 
@@ -155,16 +191,36 @@ fn gather_workspace_context(workspace_root: &Path, max_chars: usize) -> String {
     for entry in walker.flatten() {
         let path = entry.path();
         if path.is_file() {
-            let path_str = path.to_string_lossy();
-            if path_str.contains("/target/") || path_str.contains("/node_modules/") || path_str.contains("/.git/") {
+            let is_excluded_dir = path.components().any(|comp| {
+                if let Component::Normal(name) = comp {
+                    let name_str = name.to_string_lossy().to_lowercase();
+                    matches!(name_str.as_str(), "target" | "node_modules" | ".git" | "build" | "dist")
+                } else {
+                    false
+                }
+            });
+
+            if is_excluded_dir {
                 continue;
             }
 
-            // Prevent loading massive files into memory
-            if let Ok(metadata) = fs::metadata(path) {
-                if metadata.len() > 500_000 {
-                    continue;
-                }
+            let file_name = path.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+                .to_lowercase();
+
+            if file_name.starts_with(".env")
+                || file_name.ends_with(".pem")
+                || file_name.ends_with(".key")
+                || file_name.ends_with(".cert")
+                || file_name.ends_with(".pfx")
+                || file_name.ends_with(".p12")
+                || file_name.ends_with(".log")
+                || file_name == "credentials.json"
+                || file_name == "secrets.json"
+                || file_name == ".ds_store"
+            {
+                continue;
             }
 
             if let Ok(content) = fs::read_to_string(path) {
@@ -210,7 +266,7 @@ pub async fn run_chat_stream(
         let config = get_config().lock().map_err(|e| format!("Lock error: {}", e))?;
         if config.api_key.is_empty() && !config.api_url.contains("localhost") {
             return Err(
-                "❌ AI Not Connected!\nPlease configure your credentials first using:\nconnect: <token> <url> [model]\n\nCommands:\nprompt: <new system prompt>\nlimit: <max characters>"
+                "❌ AI Not Connected!\nPlease configure your credentials first using:\nconnect: <token> <url> [model]\n\nCommands:\nset-sysprompt <prompt>\nset-max-lim <number>"
                     .to_string(),
             );
         }
@@ -285,4 +341,120 @@ pub async fn run_chat_stream(
 
 pub async fn run_check(workspace_root: &Path, input: &str) -> Result<String, String> {
     run_chat_stream(workspace_root, vec![("user".to_string(), input.to_string())]).await
+}
+
+// ==========================================
+// 6. UNIT TESTS
+// ==========================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_try_handle_command_connect() {
+        let result = try_handle_command("connect: my_token https://api.openai.com/v1/chat/completions gpt-4");
+        assert!(result.is_ok());
+        let msg = result.unwrap();
+        assert!(msg.is_some());
+        assert!(msg.unwrap().contains("Connection saved successfully!"));
+    }
+
+    #[test]
+    fn test_try_handle_command_connect_short() {
+        let result = try_handle_command("connect my_token https://api.openai.com/v1/chat/completions");
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_some());
+    }
+
+    #[test]
+    fn test_try_handle_command_connect_invalid() {
+        let result = try_handle_command("connect: invalid_only");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_try_handle_command_sysprompt() {
+        let result = try_handle_command("set-sysprompt Be a helpful assistant.");
+        assert!(result.is_ok());
+        let msg = result.unwrap();
+        assert!(msg.is_some());
+        assert!(msg.unwrap().contains("System prompt updated successfully!"));
+
+        let result2 = try_handle_command("prompt: Another prompt");
+        assert!(result2.is_ok());
+        assert!(result2.unwrap().is_some());
+    }
+
+    #[test]
+    fn test_try_handle_command_max_lim() {
+        let result = try_handle_command("set-max-lim 100000");
+        assert!(result.is_ok());
+        let msg = result.unwrap();
+        assert!(msg.is_some());
+        assert!(msg.unwrap().contains("Workspace context limit updated successfully!"));
+
+        let result2 = try_handle_command("limit: 50000");
+        assert!(result2.is_ok());
+        assert!(result2.unwrap().is_some());
+
+        let result_invalid = try_handle_command("set-max-lim not_a_number");
+        assert!(result_invalid.is_err());
+    }
+
+    #[test]
+    fn test_try_handle_command_unknown() {
+        let result = try_handle_command("random_command_xyz");
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_none());
+    }
+
+    #[test]
+    fn test_chat_message_deserialization() {
+        let json_str = r#"{"role": "user", "content": "Hello world"}"#;
+        let msg: ChatMessage = serde_json::from_str(json_str).unwrap();
+        assert_eq!(msg.role, "user");
+        assert_eq!(msg.content, "Hello world");
+
+        let json_null = r#"{"role": "assistant", "content": null}"#;
+        let msg_null: ChatMessage = serde_json::from_str(json_null).unwrap();
+        assert_eq!(msg_null.role, "assistant");
+        assert_eq!(msg_null.content, "");
+
+        let json_number = r#"{"role": "system", "content": 12345}"#;
+        let msg_num: ChatMessage = serde_json::from_str(json_number).unwrap();
+        assert_eq!(msg_num.role, "system");
+        assert_eq!(msg_num.content, "12345");
+    }
+    #[test]
+    fn test_gather_workspace_context() {
+        use std::fs::File;
+        use std::io::Write;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path();
+
+        // Create a valid source file
+        let src_file_path = root.join("main.rs");
+        let mut f1 = File::create(&src_file_path).unwrap();
+        writeln!(f1, "fn main() {{ println!(\"Hello\"); }}").unwrap();
+
+        // Create an excluded directory containing a file that should be skipped
+        let target_dir = root.join("target");
+        fs::create_dir(&target_dir).unwrap();
+        let ignored_file_path = target_dir.join("build.rs");
+        let mut f2 = File::create(&ignored_file_path).unwrap();
+        writeln!(f2, "should not be included").unwrap();
+
+        // Create a sensitive file that should be filtered out
+        let env_file_path = root.join(".env");
+        let mut f3 = File::create(&env_file_path).unwrap();
+        writeln!(f3, "SECRET_KEY=12345").unwrap();
+
+        let context = gather_workspace_context(root, 10_000);
+        
+        assert!(context.contains("main.rs"), "Context should include main.rs");
+        assert!(!context.contains("should not be included"), "Context must exclude files in target/ directory");
+        assert!(!context.contains("SECRET_KEY"), "Context must filter out sensitive .env files");
+    }
 }

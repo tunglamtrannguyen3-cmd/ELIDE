@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
@@ -67,7 +67,7 @@ pub struct LspClient {
     child: Option<Child>,
     writer: Option<LspWriter>,
     next_id: Arc<AtomicU64>,
-    opened_uris: HashSet<String>,
+    opened_uris: Arc<Mutex<HashSet<String>>>,
 }
 
 impl LspClient {
@@ -78,7 +78,7 @@ impl LspClient {
             child: None,
             writer: None,
             next_id: Arc::new(AtomicU64::new(1)),
-            opened_uris: HashSet::new(),
+            opened_uris: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
@@ -115,9 +115,11 @@ impl LspClient {
             }
         }
 
-        self.opened_uris.clear();
+        if let Ok(mut opened) = self.opened_uris.lock() {
+            opened.clear();
+        }
 
-       // 2. Safely tokenize command string (respecting quotes & spaces)
+        // 2. Safely tokenize command string (respecting quotes & spaces)
         let tokens = parse_cli_tokens(lsp_cmd);
         let program = tokens
             .first()
@@ -132,14 +134,14 @@ impl LspClient {
             .open("elide_debug.log")
             .unwrap_or_else(|_| std::fs::File::create("/dev/null").unwrap());
 
-        let mut child = Command::new(&program) // Pass a reference here!
+        let mut child = Command::new(&program)
             .args(&args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::from(stderr_file))
             .spawn()
             .map_err(|e| {
-                self.server_name = format!("Failed to launch {}", program); // program is still valid here
+                self.server_name = format!("Failed to launch {}", program);
                 anyhow!("Failed to spawn LSP process '{}': {}", lsp_cmd, e)
             })?;
 
@@ -192,16 +194,23 @@ impl LspClient {
         });
         writer.send(init_req)?;
 
-        // --- STEP 2: Wait for initialization response ---
+        // --- STEP 2: Wait for initialization response with a 5-second timeout ---
         let mut reader = BufReader::new(stdout);
-        loop {
-            let msg = read_lsp_message(&mut reader).await?;
-            if let Ok(json) = serde_json::from_slice::<Value>(&msg) {
-                if json.get("id").and_then(|id| id.as_u64()) == Some(init_id) {
-                    break;
+        let init_future = async {
+            loop {
+                let msg = read_lsp_message(&mut reader).await?;
+                if let Ok(json) = serde_json::from_slice::<Value>(&msg) {
+                    if json.get("id").and_then(|id| id.as_u64()) == Some(init_id) {
+                        break;
+                    }
                 }
             }
-        }
+            Ok::<(), anyhow::Error>(())
+        };
+
+        tokio::time::timeout(Duration::from_secs(5), init_future)
+            .await
+            .map_err(|_| anyhow!("LSP initialization timed out after 5 seconds"))??;
 
         // --- STEP 3: Send initialized notification ---
         let initialized_notif = json!({
@@ -211,10 +220,11 @@ impl LspClient {
         });
         writer.send(initialized_notif)?;
 
-        // --- STEP 3.5: Automatically open all matching workspace files without duplicates ---
+        // --- STEP 3.5: Automatically open all matching workspace files and track URIs ---
         let workspace_path = std::path::PathBuf::from(workspace_dir);
         let target_lang = active_lang.clone();
         let writer_clone = writer.clone();
+        let opened_uris_clone = Arc::clone(&self.opened_uris);
         
         tokio::spawn(async move {
             let walker = ignore::WalkBuilder::new(&workspace_path)
@@ -238,14 +248,18 @@ impl LspClient {
                                 "method": "textDocument/didOpen",
                                 "params": {
                                     "textDocument": {
-                                        "uri": file_uri,
+                                        "uri": file_uri.clone(),
                                         "languageId": target_lang,
                                         "version": 1,
                                         "text": content
                                     }
                                 }
                             });
-                            let _ = writer_clone.send(did_open_req);
+                            if writer_clone.send(did_open_req).is_ok() {
+                                if let Ok(mut opened) = opened_uris_clone.lock() {
+                                    opened.insert(file_uri);
+                                }
+                            }
                         }
                     }
                 }
@@ -309,12 +323,12 @@ impl LspClient {
         }
 
         let uri = get_file_uri(filename);
-        if self.opened_uris.contains(&uri) {
-            // Already opened via workspace scan or prior open; notify change instead of duplicate open
-            return self.notify_change(filename, 1, text);
+        if let Ok(mut opened) = self.opened_uris.lock() {
+            if opened.contains(&uri) {
+                return self.notify_change(filename, 1, text);
+            }
+            opened.insert(uri.clone());
         }
-
-        self.opened_uris.insert(uri.clone());
 
         let did_open_req = json!({
             "jsonrpc": "2.0",
@@ -428,8 +442,10 @@ async fn read_lsp_message<R: AsyncBufReadExt + Unpin>(reader: &mut R) -> Result<
             break;
         }
         
-        if let Some(len_str) = header_line.strip_prefix("Content-Length:") {
-            len = len_str.trim().parse::<usize>()?;
+        if header_line.to_lowercase().starts_with("content-length:") {
+            if let Some(len_str) = header_line.split(':').nth(1) {
+                len = len_str.trim().parse::<usize>()?;
+            }
         }
     }
 
@@ -544,6 +560,24 @@ pub fn get_language_id(filename: &str) -> &'static str {
         "asciidoc" | "adoc" => "asciidoc",
         "org" => "org",
         "diff" | "patch" => "diff",
+        "f" | "f90" | "f95" | "for" | "f03" => "fortran",
+        "cbl" | "cob" | "cpy" => "cobol",
+        "pas" | "pp" | "inc" => "pascal",
+        "elm" => "elm",
+        "purs" => "purescript",
+        "re" | "rei" => "reasonml",
+        "cr" => "crystal",
+        "odin" => "odin",
+        "chpl" => "chapel",
+        "idr" => "idris",
+        "agda" => "agda",
+        "fth" | "4th" => "forth",
+        "scm" | "ss" => "scheme",
+        "lisp" | "cl" => "common-lisp",
+        "raku" | "pm6" => "raku",
+        "st" => "smalltalk",
+        "vala" | "vapi" => "vala",
+        "hx" => "haxe",
         _ => "plaintext",
     }
 }
@@ -574,4 +608,39 @@ fn parse_cli_tokens(input: &str) -> Vec<String> {
         tokens.push(current);
     }
     tokens
+}
+
+// ==========================================
+// UNIT TESTS
+// ==========================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_cli_tokens() {
+        let input = "rust-analyzer --log-file 'log.txt' \"some arg\"";
+        let tokens = parse_cli_tokens(input);
+        assert_eq!(tokens.len(), 4);
+        assert_eq!(tokens[0], "rust-analyzer");
+        assert_eq!(tokens[1], "--log-file");
+        assert_eq!(tokens[2], "log.txt");
+        assert_eq!(tokens[3], "some arg");
+    }
+
+    #[test]
+    fn test_get_language_id() {
+        assert_eq!(get_language_id("main.rs"), "rust");
+        assert_eq!(get_language_id("script.py"), "python");
+        assert_eq!(get_language_id("Dockerfile"), "dockerfile");
+        assert_eq!(get_language_id("CMakeLists.txt"), "cmake");
+        assert_eq!(get_language_id("unknown.xyz"), "plaintext");
+    }
+
+    #[test]
+    fn test_get_file_uri() {
+        let uri = get_file_uri("Cargo.toml");
+        assert!(uri.starts_with("file://"));
+    }
 }

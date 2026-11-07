@@ -1,22 +1,103 @@
-# .github/workflows/build.yml
-name: build
+name: build-universal-linux
 
-on: [push, pull_request]
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
 
 jobs:
-  build:
+  # 1. Build Universal Static Binary (Musl - runs on EVERY Linux distro: Alpine, Void, NixOS, Arch, Ubuntu, etc.)
+  build-static-musl:
+    name: Build Universal Static Binary (musl)
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
 
+      - name: Install Rust Musl Target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - name: Install Build Dependencies
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Build Static Binary
+        run: cargo build --release --target x86_64-unknown-linux-musl
+
+      - name: Strip Binary
+        run: strip target/x86_64-unknown-linux-musl/release/elide
+
+      - name: Upload Static Musl Binary Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: elide-x86_64-linux-static-musl
+          path: target/x86_64-unknown-linux-musl/release/elide
+
+  # 2. Build Universal AppImage (Single file run-anywhere executable)
+  build-appimage:
+    name: Build Universal AppImage
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Build ELIDE
+      - name: Build Release Binary
         run: cargo build --release
 
-      - name: Upload ELIDE binary
+      - name: Install cargo-appimage
+        run: cargo install cargo-appimage
+
+      - name: Create AppImage Directory Structure
+        run: |
+          mkdir -p AppDir/usr/bin AppDir/usr/share/icons/hicolor/scalable/apps
+          cp target/release/elide AppDir/usr/bin/elide
+          cp elide.jpeg AppDir/elide.jpeg
+          cat << 'EOF' > AppDir/elide.desktop
+          [Desktop Entry]
+          Name=ELIDE
+          Exec=elide
+          Icon=elide
+          Type=Application
+          Categories=Development;IDE;TextEditor;
+          Terminal=true
+          EOF
+
+      - name: Build AppImage
+        run: cargo appimage
+
+      - name: Upload AppImage Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: elide-linux
-          path: target/release/elide
+          name: elide-x86_64.AppImage
+          path: "*.AppImage"
+
+  # 3. Build .deb & .rpm for native Debian/Fedora integration
+  build-distro-packages:
+    name: Build .deb and .rpm Packages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Packaging Helpers
+        run: |
+          cargo install cargo-deb
+          cargo install cargo-generate-rpm
+
+      - name: Build .deb Package
+        run: cargo deb
+
+      - name: Build .rpm Package
+        run: |
+          cargo build --release
+          cargo generate-rpm
+
+      - name: Upload .deb & .rpm Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: elide-deb-rpm-packages
+          path: |
+            target/debian/*.deb
+            target/generate-rpm/*.rpm
